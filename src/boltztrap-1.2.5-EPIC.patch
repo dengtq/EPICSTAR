@@ -1,0 +1,325 @@
+diff -ur boltztrap-1.2.5/src/BoltzTraP.F90 boltztrap-EPIC/src/BoltzTraP.F90
+--- boltztrap-1.2.5/src/BoltzTraP.F90	2013-11-20 23:29:01.000000000 +0800
++++ boltztrap-EPIC/src/BoltzTraP.F90	2020-09-13 10:14:50.201495794 +0800
+@@ -69,6 +69,8 @@
+   integer :: un_dosxy  = 50
+   integer :: un_dosxyz = 51
+   integer :: un_v2dos = 152
++  integer :: un_doscurv = 153
++  integer :: un_dosmm1 = 154
+   integer :: un_dosphdrag = 151
+ 
+   integer :: un_phdos    = 52
+@@ -278,7 +280,7 @@
+      ! NB : for the moment do not allow lifetimes for phonons: should add 2x lifetimes files, and at least check that grids correspond:
+      !  tau grid is = to electron bs grid, but not necessarily phon grid.
+      CALL dos(cell, phonbs, spinorbit, phegap, icut12, icut22, lifetbs%engre, .false., &
+-&       un_phdos, un_phdosxy, un_phdosxyz, un_v2dos)
++&       un_phdos, un_phdosxy, un_phdosxyz, un_v2dos, un_doscurv, un_dosmm1)
+   ENDIF
+ 
+   IF(bandstyle/='PHON'.AND.modus2=='BOLTZ') THEN
+@@ -294,7 +296,7 @@
+      else
+        write (6,*) 'Calling DOS'
+        CALL dos(cell,bs,spinorbit,egap,icut12,icut22,lifetbs%engre,tauinput, &
+-&               un_dos, un_dosxy, un_dosxyz, un_v2dos)
++&               un_dos, un_dosxy, un_dosxyz, un_v2dos, un_doscurv, un_dosmm1)
+ 
+ ! loop over all files of projections
+        do iproj = 1, nproj
+@@ -312,7 +314,7 @@
+          CALL fite4(cell, projbs)
+          call out_engre(un_projengre, egap, projbs)
+          CALL dos(cell,bs,spinorbit,egap,icut12,icut22,lifetbs%engre,tauinput, &
+-&             un_dos, un_dosxy, un_dosxyz, un_v2dos, &
++&             un_dos, un_dosxy, un_dosxyz, un_v2dos, un_doscurv, un_dosmm1, &
+ &             projbs%engre, un_dosproj(iproj))
+          call destroy_bandstructure (projbs)
+        enddo
+diff -ur boltztrap-1.2.5/src/dos.F90 boltztrap-EPIC/src/dos.F90
+--- boltztrap-1.2.5/src/dos.F90	2013-11-20 22:21:57.000000000 +0800
++++ boltztrap-EPIC/src/dos.F90	2020-09-13 10:14:54.460568315 +0800
+@@ -1,5 +1,5 @@
+ SUBROUTINE dos(cell, bs, spinorbit,egap,icut12,icut22,taugre,tauinput,&
+-&   unitdos, unitdosxy, unitdosxyz, unitv2dos, projgre, unitdosproj)
++&   unitdos, unitdosxy, unitdosxyz, unitv2dos, unitdoscurv, unitdosmm1, projgre, unitdosproj)
+   USE defs
+   USE bandstructure
+   USE input
+@@ -10,6 +10,7 @@
+   type(bs_type), intent(in) :: bs
+   type(cell_type), intent(in) :: cell
+   INTEGER,INTENT(IN)      :: unitdos, unitdosxy, unitdosxyz, unitv2dos
++  INTEGER,INTENT(IN)      :: unitdoscurv, unitdosmm1
+   INTEGER,INTENT(IN)      :: icut12,icut22
+ !  INTEGER      :: icut1,icut2,icut12,icut22
+   REAL(8),INTENT(IN)      :: spinorbit,egap
+@@ -19,7 +20,13 @@
+   INTEGER,INTENT(IN),optional  :: unitdosproj
+ 
+   REAL(8),ALLOCATABLE     :: dos1(:),dos_proj(:),dos_sigxy(:,:,:),dos_sigxyz(:,:,:,:),dosint(:)
++  REAL(8),ALLOCATABLE     :: dos_curv(:,:,:)
+   REAL(8),ALLOCATABLE     :: dos1_tmp(:,:),dos_sigxy_tmp(:,:,:),dos_sigxyz_tmp(:,:,:,:)
++  REAL(8),ALLOCATABLE     :: dos_curv_tmp(:,:,:)
++  ! enforcing rotational symmetry
++  ! rotational matrix in cartesian coordinates
++  ! by Deng Tianqi
++  REAL(8)                 :: tmpB(3,3), tmpA(3,3), S_cart(3,3,cell%nsym)
+ ! FILES USED:
+ !   Tensors are output to file unitdos, unitdosxy, unitdosxyz = 49-51
+ !
+@@ -109,10 +116,12 @@
+   ALLOCATE(dos1_tmp(0:npoints,2))
+   ALLOCATE(dos_proj(0:npoints))
+   ALLOCATE(dos_sigxy(3,3,0:npoints),dos_sigxy_tmp(3,3,0:npoints))
++  ALLOCATE(dos_curv(3,3,0:npoints),dos_curv_tmp(3,3,0:npoints))
+   ALLOCATE(dos_sigxyz(3,3,3,0:npoints),dos_sigxyz_tmp(3,3,3,0:npoints))
+ 
+ !  factor=ONE/(ifft(1)*ifft(2)*ifft(3)*deltae)
+   dos1=ZERO;  dos_sigxy=ZERO;  dos_sigxyz=ZERO
++  dos_curv=ZERO
+   dos_proj = ZERO
+   isig=1
+ 
+@@ -132,6 +141,7 @@
+         CALL c3fft(ifft(1),ifft(2),ifft(3),projgrid,ifft(1),ifft(2),isig,cwork,dwork,ierr)
+      ENDIF
+      
++     IF(idebug>0) WRITE(6,'(a)') 'FFT'
+      CALL setfft(cell, bs, energygrid,velocitygrid,curvaturegrid,ifft,bs%engre(:,iband))
+      CALL c3fft(ifft(1),ifft(2),ifft(3),energygrid,ifft(1),ifft(2),isig,cwork,dwork,ierr)
+      DO i=1,3
+@@ -146,6 +156,7 @@
+      ENDDO
+ 
+      dos1_tmp=ZERO;  dos_sigxy_tmp=ZERO;  dos_sigxyz_tmp=ZERO
++     dos_curv_tmp=ZERO
+ 
+      IF (minval(real(energygrid)) < ebmin) then
+        write (6,*) 'WARNING: dos.F90 minval(energygrid) ', minval(real(energygrid)), ' is below ebmin = ', ebmin
+@@ -158,13 +169,14 @@
+        write (6,*) ' will continue but truncate energy grid'
+      end if
+ 
++     IF(idebug>0) WRITE(6,'(a)') 'DOS'
+      IF(dosmethod=='TETRA') THEN
+         if (present(projgre)) then
+           CALL dos_tetra    (ifft,energygrid,velocitygrid,curvaturegrid, taugrid,&
+-             npoints,dos1_tmp,dos_sigxy_tmp,dos_sigxyz_tmp,ebmin,ebmax, projgrid)
++             npoints,dos1_tmp,dos_sigxy_tmp,dos_sigxyz_tmp,dos_curv_tmp,ebmin,ebmax, projgrid)
+         else
+           CALL dos_tetra    (ifft,energygrid,velocitygrid,curvaturegrid, taugrid,&
+-             npoints,dos1_tmp,dos_sigxy_tmp,dos_sigxyz_tmp,ebmin,ebmax)
++             npoints,dos1_tmp,dos_sigxy_tmp,dos_sigxyz_tmp,dos_curv_tmp,ebmin,ebmax)
+         endif
+      ELSE
+         if (present(projgre)) then
+@@ -179,6 +191,7 @@
+ !     print*,dos1_tmp(70),iband
+      dos1(0:npoints) = dos1(0:npoints)+dos1_tmp(0:npoints,1)
+      dos_sigxy(1:3,1:3,0:npoints) = dos_sigxy(1:3,1:3,0:npoints)+dos_sigxy_tmp(1:3,1:3,0:npoints)
++     dos_curv(1:3,1:3,0:npoints) = dos_curv(1:3,1:3,0:npoints)+dos_curv_tmp(1:3,1:3,0:npoints)
+      dos_sigxyz(1:3,1:3,1:3,0:npoints) = dos_sigxyz(1:3,1:3,1:3,0:npoints)+dos_sigxyz_tmp(1:3,1:3,1:3,0:npoints)
+      dos_proj(0:npoints) = dos_proj(0:npoints)+dos1_tmp(0:npoints,2)
+      IF(iband>=icut12.AND.iband<=icut22) THEN
+@@ -212,13 +225,46 @@
+ 
+ ! if dos projections present, only print them, not the normal dos
+   if (.not. present (unitdosproj)) then
++    ! Generate S matrices in cartesian coordinates
++    ! first generate A and A^-1 matrix for primitive cell
++    tmpA = MATMUL(cell%aac_dir,cell%p2c_dir)
++    tmpB = MATMUL(cell%aac_rec,cell%p2c_rec)
++    ! Then S_cart = A S^T (A^{-1})^T
++    do j = 1, cell%nsym
++       S_cart(:,:,j) = TRANSPOSE(cell%symop(:,:,j))
++       S_cart(:,:,j) = MATMUL(tmpB, S_cart(:,:,j))
++       S_cart(:,:,j) = MATMUL(tmpA, TRANSPOSE(S_cart(:,:,j)))
++    end do
+ ! MJV: changed these formats here and in fermiintegrals because there was some overflow which fortran prints as ******
+     WRITE(unitdos,'(a22,2e20.8,e20.8,e20.8,i7)') '#DOS(states/Ry/spin) ',ebmin,ebmax,deltae,egap,npoints
+     write (unitv2dos,*) '# Fermi veloc^2 / Dos(e)'
+     DO i=0,npoints
+        e1=ebmin+deltae*(REAL(i)+HALF)
+        WRITE(unitdos,'(e20.8,2e20.8)') e1,dos1(i),dosint(i)
+-       WRITE(unitdosxy,'(e20.8,9e20.8)') e1,dos_sigxy(1:3,1:3,i)
++      !WRITE(unitdosxy,'(e20.8,9e20.8)') e1,dos_sigxy(1:3,1:3,i)
++      !WRITE(unitdoscurv,'(e20.8,9e20.8)') e1,dos_curv(1:3,1:3,i)
++      !if (abs(dos1(i)) .gt. 0.000001) WRITE(unitdosmm1,'(f14.5,9e20.8)') e1,dos_curv(1:3,1:3,i)/dos1(i)
++       ! enforce all rotational symmetries 
++       ! since TETRA seems to break the symmetry somehow
++       IF(dosmethod=='TETRA') THEN
++          tmpA = 0.d0
++          do j = 1, cell%nsym
++             tmpA = tmpA + MATMUL(MATMUL(S_cart(:,:,j),dos_sigxy(1:3,1:3,i)),TRANSPOSE(S_cart(:,:,j)))
++          end do
++          tmpA = tmpA / dble(cell%nsym)
++          WRITE(unitdosxy,'(e20.8,9e20.8)') e1,tmpA(1:3,1:3)
++          tmpA = 0.d0
++          do j = 1, cell%nsym
++             tmpA = tmpA + MATMUL(MATMUL(S_cart(:,:,j),dos_curv(1:3,1:3,i)),TRANSPOSE(S_cart(:,:,j)))
++          end do
++          tmpA = tmpA / dble(cell%nsym)
++          WRITE(unitdoscurv,'(e20.8,9e20.8)') e1,tmpA(1:3,1:3)
++          if (abs(dos1(i)) .gt. 0.000001)  WRITE(unitdosmm1,'(f14.5,9e20.8)') e1,tmpA(1:3,1:3)/dos1(i)
++       ELSE
++          WRITE(unitdosxy,'(e20.8,9e20.8)') e1,dos_sigxy(1:3,1:3,i)
++          WRITE(unitdoscurv,'(e20.8,9e20.8)') e1,dos_curv(1:3,1:3,i)
++          if (abs(dos1(i)) .gt. 0.000001) WRITE(unitdosmm1,'(f14.5,9e20.8)') e1,dos_curv(1:3,1:3,i)/dos1(i)
++       ENDIF
+        WRITE(unitdosxyz,'(e20.8,27e20.8)') e1,dos_sigxyz(1:3,1:3,1:3,i)
+        if (abs(dos1(i)) .gt. 0.000001) WRITE(unitv2dos,'(f14.5,9e20.8)') e1,dos_sigxy(1:3,1:3,i)/dos1(i)
+     ENDDO
+@@ -234,4 +280,5 @@
+   DEALLOCATE(taugrid)
+   DEALLOCATE(dwork,cwork)
+   DEALLOCATE(dos1,dosint,dos_sigxy,dos_sigxyz, dos_proj)
++  DEALLOCATE(dos_curv)
+ END SUBROUTINE dos
+diff -ur boltztrap-1.2.5/src/dos_tetra.F90 boltztrap-EPIC/src/dos_tetra.F90
+--- boltztrap-1.2.5/src/dos_tetra.F90	2013-11-20 22:21:57.000000000 +0800
++++ boltztrap-EPIC/src/dos_tetra.F90	2020-09-13 10:15:00.198666021 +0800
+@@ -1,5 +1,5 @@
+ SUBROUTINE dos_tetra(ifft,energygrid,velocitygrid,curvaturegrid, taugrid, &
+-     npoints,dos1,dos_sigxy,dos_sigxyz,ebmin,ebmax, projgrid)
++     npoints,dos1,dos_sigxy,dos_sigxyz,dos_curv,ebmin,ebmax, projgrid)
+   USE defs
+   USE input
+   use interfaces, except_this_one => dos_tetra
+@@ -12,17 +12,20 @@
+   COMPLEX(8),INTENT(IN),OPTIONAL   :: projgrid(ifft(1),ifft(2),ifft(3))
+   REAL(8),INTENT(IN)      :: ebmin,ebmax
+   REAL(8),INTENT(INOUT)   :: dos1(0:npoints,2),dos_sigxy(3,3,0:npoints),dos_sigxyz(3,3,3,0:npoints)
++  REAL(8),INTENT(INOUT)   :: dos_curv(3,3,0:npoints)
+   INTEGER                 :: i,j,k,index,ialp,ibet
+   INTEGER                 :: ia,ib,ic,ia1,ib1,ic1
+   INTEGER                 :: ii1,ii2,ii3,i1(4),i2(4),i3(4)
+-  INTEGER                 :: nfun=34
++  INTEGER                 :: nfun=40
+   REAL(8),ALLOCATABLE     :: dos_tmp(:,:), fac(:,:)
+   REAL(8)                 :: ene2(0:1,0:1,0:1),x(4)
+ !  REAL(8)                 :: rnumb(0:npoints,nfun),snumb(0:npoints,nfun)
+   REAL(8)                 :: v
+ !  INTEGER                 :: ns,no,nu
+   REAL(8)                 :: maxene,minene,dene(3,3,0:1,0:1,0:1),sigxyz(3,3,3,0:1,0:1,0:1),ddene(3,3),tmp
+-  REAL(8)                 :: antisym(3,3,3),vv(3,1)
++  REAL(8)                 :: curv(6,0:1,0:1,0:1)
++  REAL(8)                 :: antisym(3,3,3) ,vv(3,1)
++! COMPLEX(8)              :: vv(3,1)
+   REAL(8)                 :: proj_tetra(0:1,0:1,0:1)
+ 
+   maxene=-999.; minene=999.
+@@ -30,7 +33,7 @@
+   antisym(1,2,3)= ONE; antisym(3,1,2)= ONE;  antisym(2,3,1)= ONE
+   antisym(1,3,2)=-ONE; antisym(3,2,1)=-ONE;  antisym(2,1,3)=-ONE
+ 
+-  nfun = 34 + 1 ! 1 additional for projected DOS
++  nfun = 40 + 1 ! 1 additional for projected DOS
+   ALLOCATE (dos_tmp(nfun,0:npoints))
+   ALLOCATE (fac(nfun,4))
+ 
+@@ -52,7 +55,7 @@
+                     DO i=1,3
+                        vv(i,1)=velocitygrid(ia1,ib1,ic1,i)
+                     ENDDO
+-                    dene(1:3,1:3,ii1,ii2,ii3)= REAL(taugrid(ia1,ib1,ic1)) *  MATMUL(vv,TRANSPOSE(vv))
++                    dene(1:3,1:3,ii1,ii2,ii3)= REAL(taugrid(ia1,ib1,ic1)) *  MATMUL(vv,(TRANSPOSE(vv)))
+                     index=0
+                     DO i=1,3
+                        DO j=1,i
+@@ -60,6 +63,7 @@
+                           ! NB: one taugrid is already in dene
+                           ddene(i,j)=curvaturegrid(ia1,ib1,ic1,index)*REAL(taugrid(ia1,ib1,ic1))
+                           ddene(j,i)=ddene(i,j)
++                          curv(index,ii1,ii2,ii3)=abs(curvaturegrid(ia1,ib1,ic1,index))
+                        ENDDO
+                     ENDDO
+                     DO i=1,3
+@@ -138,7 +142,14 @@
+                  fac(5,ii2)=dene(1,2,i1(ii2),i2(ii2),i3(ii2))
+                  fac(6,ii2)=dene(1,3,i1(ii2),i2(ii2),i3(ii2))
+                  fac(7,ii2)=dene(2,3,i1(ii2),i2(ii2),i3(ii2))
+-                 index=7
++                 fac(8,ii2)=proj_tetra(i1(ii2),i2(ii2),i3(ii2))
++                 fac( 9,ii2)=curv(1,i1(ii2),i2(ii2),i3(ii2))
++                 fac(10,ii2)=curv(2,i1(ii2),i2(ii2),i3(ii2))
++                 fac(11,ii2)=curv(3,i1(ii2),i2(ii2),i3(ii2))
++                 fac(12,ii2)=curv(4,i1(ii2),i2(ii2),i3(ii2))
++                 fac(13,ii2)=curv(5,i1(ii2),i2(ii2),i3(ii2))
++                 fac(14,ii2)=curv(6,i1(ii2),i2(ii2),i3(ii2))
++                 index=14
+                  DO i=1,3
+                     DO j=1,3
+                        DO k=1,3
+@@ -147,7 +158,6 @@
+                        ENDDO
+                     ENDDO
+                  ENDDO
+-                 fac(35,ii2) = proj_tetra(i1(ii2),i2(ii2),i3(ii2))
+               ENDDO
+               CALL noculc(nfun, dos_tmp,npoints,fac,x,v,ebmin, ebmax, deltae)
+            ENDDO
+@@ -165,7 +175,17 @@
+   dos_sigxy(3,1,0:npoints)=dos_sigxy(3,1,0:npoints)+dos_tmp(6,0:npoints)
+   dos_sigxy(2,3,0:npoints)=dos_sigxy(2,3,0:npoints)+dos_tmp(7,0:npoints)
+   dos_sigxy(3,2,0:npoints)=dos_sigxy(3,2,0:npoints)+dos_tmp(7,0:npoints)
+-  index=7
++  dos1(0:npoints,2)=dos1(0:npoints,2)+dos_tmp(8,0:npoints) ! projected DOS 
++  dos_curv(1,1,0:npoints)=dos_curv(1,1,0:npoints)+dos_tmp( 9,0:npoints)
++  dos_curv(2,1,0:npoints)=dos_curv(2,1,0:npoints)+dos_tmp(10,0:npoints)
++  dos_curv(1,2,0:npoints)=dos_curv(1,2,0:npoints)+dos_tmp(10,0:npoints)
++  dos_curv(2,2,0:npoints)=dos_curv(2,2,0:npoints)+dos_tmp(11,0:npoints)
++  dos_curv(3,1,0:npoints)=dos_curv(3,1,0:npoints)+dos_tmp(12,0:npoints)
++  dos_curv(1,3,0:npoints)=dos_curv(1,3,0:npoints)+dos_tmp(12,0:npoints)
++  dos_curv(3,2,0:npoints)=dos_curv(3,2,0:npoints)+dos_tmp(13,0:npoints)
++  dos_curv(2,3,0:npoints)=dos_curv(2,3,0:npoints)+dos_tmp(13,0:npoints)
++  dos_curv(3,3,0:npoints)=dos_curv(3,3,0:npoints)+dos_tmp(14,0:npoints)
++  index=14
+   DO i=1,3
+      DO j=1,3
+         DO k=1,3
+@@ -174,6 +194,5 @@
+         ENDDO
+      ENDDO
+   ENDDO
+-  dos1(0:npoints,2)=dos1(0:npoints,2)+dos_tmp(35,0:npoints) ! projected DOS 
+ 
+ END SUBROUTINE dos_tetra
+diff -ur boltztrap-1.2.5/src/m_interfaces.F90 boltztrap-EPIC/src/m_interfaces.F90
+--- boltztrap-1.2.5/src/m_interfaces.F90	2013-11-20 22:21:57.000000000 +0800
++++ boltztrap-EPIC/src/m_interfaces.F90	2020-09-13 10:15:04.797744332 +0800
+@@ -53,7 +53,7 @@
+ 
+ interface
+ SUBROUTINE dos(cell, bs, spinorbit,egap,icut12,icut22,taugre,tauinput,&
+-&   unitdos, unitdosxy, unitdosxyz, unitv2dos, projgre, un_projdos)
++&   unitdos, unitdosxy, unitdosxyz, unitv2dos, unitdoscurv, unitdosmm1, projgre, un_projdos)
+   USE defs
+   USE bandstructure
+   USE input
+@@ -62,6 +62,7 @@
+   type(bs_type), intent(in) :: bs
+   type(cell_type), intent(in) :: cell
+   INTEGER,INTENT(IN)      :: unitdos, unitdosxy, unitdosxyz, unitv2dos
++  INTEGER,INTENT(IN)      :: unitdoscurv, unitdosmm1
+   INTEGER,INTENT(IN)      :: icut12,icut22
+ !  INTEGER      :: icut1,icut2,icut12,icut22
+   REAL(8),INTENT(IN)      :: spinorbit,egap
+@@ -91,7 +92,7 @@
+ 
+ interface
+ SUBROUTINE dos_tetra(ifft,energygrid,velocitygrid,curvaturegrid, taugrid, &
+-     npoints,dos1,dos_sigxy,dos_sigxyz,ebmin,ebmax, projgrid)
++     npoints,dos1,dos_sigxy,dos_sigxyz,dos_curv,ebmin,ebmax, projgrid)
+   USE defs
+   USE input
+   IMPLICIT NONE
+@@ -103,6 +104,7 @@
+   COMPLEX(8),INTENT(IN),optional      :: projgrid(ifft(1),ifft(2),ifft(3))
+   REAL(8),INTENT(IN)      :: ebmin,ebmax
+   REAL(8),INTENT(INOUT)   :: dos1(0:npoints,2),dos_sigxy(3,3,0:npoints),dos_sigxyz(3,3,3,0:npoints)
++  REAL(8),INTENT(INOUT)   :: dos_curv(3,3,0:npoints)
+ END SUBROUTINE dos_tetra
+ end interface
+ 

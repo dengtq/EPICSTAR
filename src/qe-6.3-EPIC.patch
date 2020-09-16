@@ -1,0 +1,2681 @@
+diff -urN q-e-qe-6.3/PHonon/PH/epic.f90 q-e-qe-6.3-EPIC/PHonon/PH/epic.f90
+--- q-e-qe-6.3/PHonon/PH/epic.f90	1970-01-01 07:30:00.000000000 +0730
++++ q-e-qe-6.3-EPIC/PHonon/PH/epic.f90	2020-09-16 13:37:19.029447430 +0800
+@@ -0,0 +1,452 @@
++!-----------------------------------------------------------------------
++!      EPIC STAR Method
++!      Compute the generalized Eliashberg function
++!      Writen by Deng Tianqi
++!
++!      partly adapted from EPA code written by Georgy Samsonidze
++!
++!-----------------------------------------------------------------------
++
++program epic
++  use kinds, only : dp
++  use constants, only : ry_to_cmm1, rytoev, degspin, eps8, eps12, tpi, bohr_radius_angs
++  USE ktetra
++  implicit none
++
++  integer, parameter :: nwin = 2
++  integer, parameter :: uni = 101
++  integer, parameter :: uno = 102
++  integer, parameter :: uno2 = 103
++  real(dp), parameter :: epsw2 = (10_dp / ry_to_cmm1)**2
++
++  logical :: minus_q, time_reversal, ltmp
++  integer :: nmodes, nqs, nspin, nbnd, nkstot, nksqtot, &
++      nat, nsymq, irotmq, iq, ik, ikk, ikq, ibnd, jbnd, isub, jsub, &
++      nu, mu, vu, ipert, jpert, ii, jj, kk, ll, mm, nn, ijob, &
++      nev, bvmin, bvmax, nec, bcmin, bcmax, ndist, nepmax, &
++      nemin, nemax, ndemax, nde(nwin), ne(nwin), nepair(nwin), bpair(2, nwin), &
++      s(3, 3, 48), invs(48), t_rev(48), nsubbnd(nwin), nsym, nq, isq(48), imq, dq, &
++      nq1, nq2, nq3, nk1, nk2, nk3, k1, k2, k3, tfst, tlst, elph_nbnd_min, elph_nbnd_max,nbnd_fs
++  real(dp) :: weight, factor, gbuf,&
++      ev, dev, ec, dec, wspin, &
++      ee(nwin), de(nwin), invde(nwin), xq(3), at(3, 3), bg(3, 3), sxq(3,48)
++  real(dp) :: weight0, weight1, weight2, wmnkq, gtmp1,&
++      gtmp2, sigma2, sigmap2, alat, volume, tpiba, invq2, el_ph_lr, tmp, dEmax,&
++      sigmap_sqrttpi_m1, vtmp1
++  integer :: nwin_old, nmodes_old, kkmin, kkmax
++  logical :: overhw
++  character(len=256) :: fni, prefix, job, fmt
++  character(len=32) :: s1, s2, s3, s4, s5
++
++  real(dp), allocatable :: gavg(:,:,:,:)
++  real(dp), allocatable :: gavg_lr(:,:,:,:)
++  real(dp), allocatable :: F(:,:)
++  real(dp), allocatable :: degrid(:,:,:)
++  real(dp), allocatable :: v1(:,:,:,:)
++  real(dp), allocatable :: egrid(:,:,:)
++  real(dp), allocatable :: x_q(:,:)
++  real(dp), allocatable :: wq(:)
++  real(dp), allocatable :: w2(:)
++  real(dp), allocatable :: invw2(:)
++  real(dp), allocatable :: invw(:)
++  real(dp), allocatable :: omega(:)
++  complex(dp), allocatable :: dyn(:,:)
++  real(dp), allocatable :: xk(:,:)
++  real(dp), allocatable :: wk(:)
++  real(dp), allocatable :: et(:,:)
++  real(dp), allocatable :: et_col(:,:)
++  real(dp), allocatable :: gauss_ee(:,:,:)
++  real(dp), allocatable :: gauss_ep(:,:,:,:,:)
++  real(dp), allocatable :: wght(:,:,:,:)
++  integer, allocatable :: ikks(:)
++  integer, allocatable :: ikqs(:)
++  integer, allocatable :: irt(:,:)
++  real(dp), allocatable :: rtau(:,:,:)
++  complex(dp), pointer :: u(:,:)
++  complex(dp), allocatable :: el_ph_mat(:,:,:,:)
++  complex(dp), allocatable :: el_ph_abs(:,:,:,:,:)
++  complex(dp), allocatable :: el_ph_sum(:,:)
++
++  write(6, '("Reading standard input")')
++  read(5, '(a)') fni
++  read(5, '(a)') prefix
++  read(5, '(a)') job
++  read(5, *) ev, dev, nev, bvmin, bvmax
++  read(5, *) ec, dec, nec, bcmin, bcmax
++  read(5, *) gtmp1, gtmp2
++  ! job type, other terms are reserved for testing
++  if (trim(job) .eq. 'epic') then
++    ijob = 5
++  else
++    write(0, '("Error: wrong job type")')
++    stop 1
++  endif
++  open(uni, file = fni, form = 'unformatted', status = 'old')
++  read(uni)
++  read(uni) ii, nat, ii, ii, nsym, ii, ii, &
++      ii, nspin, nbnd, nmodes, nqs
++  allocate( w2(nmodes))
++  do ii = 1, 14
++    read(uni)
++  end do
++  dEmax = 0.d0
++  do iq = 1, nqs
++    do ii = 1, 29
++      read(uni)
++    end do
++    read(uni) (w2(ll), ll = 1, nmodes)
++    read(uni)
++    read(uni) 
++    do ll = 1, nmodes
++      if (sqrt(w2(ll)) > dEmax) then
++        dEmax = sqrt(w2(ll))
++      end if
++    end do
++  end do
++  close(uni)
++  dEmax = dEmax + 5.d0 * gtmp2 / rytoev
++
++  open(uni, file = fni, form = 'unformatted', status = 'old')
++  write(6, '("Reading file ", a)') trim(fni)
++  read(uni) s1, s2, s3
++  write(6, '("    title: ", a, ", date: ", a, ", time: ", a)') &
++      trim(s1), trim(s2), trim(s3)
++  read(uni) ii, nat, ii, ii, ii, ii, ii, &
++      ii, nspin, nbnd, nmodes, nqs
++  write(s1, '(i8)') nqs
++  write(s2, '(i8)') nbnd
++  write(s3, '(i8)') nspin
++  write(s4, '(i8)') nmodes
++  if (ijob .eq. 4 .and. nmodes .ne. nmodes_old) then
++    write(0,'("wrong nmodes in input")')
++    stop 1
++  endif
++  write(6, '("    nqs = ", a, " nbnd = ", a, " nspin = ", a, &
++      " nmodes = ", a)') trim(adjustl(s1)), trim(adjustl(s2)), &
++      trim(adjustl(s3)), trim(adjustl(s4))
++
++  if (nspin .eq. 1) then
++    wspin = 1.0d0 / degspin
++  else
++    wspin = 1.0d0
++  endif
++
++  ee = (/ev, ec/)
++  de = (/dev, dec/)
++  invde = (/ 1.d0/dev, 1.d0/dec/)
++  ne = (/nev, nec/)
++  nemin = minval(ne)
++  nemax = maxval(ne)
++  bpair = reshape((/bvmin, bvmax, bcmin, bcmax/), shape(bpair))
++  do ii = 1, nwin
++    if (bpair(1, ii) .lt. 1 .or. bpair(1, ii) .gt. nbnd) bpair(1, ii) = 1
++    if (bpair(2, ii) .lt. 1 .or. bpair(2, ii) .gt. nbnd) bpair(2, ii) = nbnd
++    nsubbnd(ii) = bpair(2, ii) - bpair(1, ii) + 1
++  enddo
++  do ii = 1, nwin
++    nde(ii)= int(dEmax * rytoev / de(ii)) + 1
++  end do
++  ndemax = maxval(abs(nde))
++  write(6, '("    ndemax = ",i8)') ndemax
++  allocate( gavg(nmodes, 2*ndemax-1, nemax, nwin))
++  allocate(   v1(nmodes, 2*ndemax-1, nemax, nwin))
++  allocate(gavg_lr(nmodes,2*ndemax-1, nemax, nwin))
++  allocate(    F(2*ndemax-1, nwin))
++  allocate( egrid(nemax+ndemax, nwin,1))
++  allocate(degrid(2*ndemax-1, nwin,1))
++  do ii = 1, nwin
++    do jj = 1, nemax+ndemax
++      egrid(jj, ii, 1) = ee(ii) + de(ii) * (jj - 1)
++    enddo
++    do jj = 1, 2*ndemax-1
++      degrid(jj, ii, 1) = de(ii) * (jj  - ndemax)
++    enddo
++  enddo
++  egrid(:,:,:) = egrid(:,:,:) / rytoev
++  degrid(:,:,:) = degrid(:,:,:) / rytoev
++
++  allocate(x_q(3, nqs))
++  allocate(wq(nqs))
++  if (.not. allocated(w2)) allocate(w2(nmodes))
++  if (.not. allocated(invw2)) allocate(invw2(nmodes))
++  if (.not. allocated(invw)) allocate(invw(nmodes))
++  allocate(omega(nmodes))
++  allocate(dyn(nmodes, nmodes))
++  allocate(irt(48, nat))
++  allocate(rtau(3, 48, nat))
++  allocate(u(nmodes, nmodes))
++  allocate(el_ph_sum(nmodes, nmodes))
++  read(uni) nq1, nq2, nq3, nk1, nk2, nk3, k1, k2, k3
++  read(uni) time_reversal, ltmp, ltmp, ltmp, ltmp, ltmp, ltmp
++  read(uni) alat, volume, tpiba, tmp, tmp, tmp
++  read(uni)
++  read(uni)
++  read(uni)
++  read(uni) ((at(ii, jj), ii = 1, 3), jj = 1, 3)
++  read(uni) ((bg(ii, jj), ii = 1, 3), jj = 1, 3)
++  read(uni)
++  read(uni)
++  read(uni)
++  read(uni) ((x_q(ii, jj), ii = 1, 3), jj = 1, nqs)
++  read(uni) (wq(ii), ii = 1, nqs)
++  read(uni)
++  call cryst_to_cart(nqs, x_q, bg, 1)
++
++  gtmp1 = rytoev/ gtmp1 ! here gtmp1 means the Gaussian parameter for electron
++  sigma2 = - 0.5d0 * (gtmp1**2)
++  gtmp2 = rytoev / gtmp2 ! here gtmp1 means the Gaussian parameter for phonon
++  sigmap2 = - 0.5d0 * (gtmp2**2)
++  sigmap_sqrttpi_m1 = 1.d0 * gtmp2 / sqrt(tpi)
++  gavg = 0.0d0
++  gavg_lr = 0.0d0
++  F = 0.0d0
++  ! evaluate g^2 distribution
++  v1 = 0.d0
++  do iq = 1, nqs
++    xq(:) = x_q(:, iq)
++    invq2 = tpiba*tpiba*(xq(1)*xq(1)+xq(2)*xq(2)+xq(3)*xq(3))
++    if (invq2 > eps8) invq2 = bohr_radius_angs*bohr_radius_angs / invq2
++    read(uni) nsymq, irotmq, ii, ii, nkstot, nksqtot
++    write(s1, '(i8)') iq
++    write(s2, '(i8)') nkstot
++    write(s3, '(i8)') nksqtot
++    write(6, '("    iq = ", a, " nkstot = ", a, " nksqtot = ", a)') &
++        trim(adjustl(s1)), trim(adjustl(s2)), trim(adjustl(s3))
++    allocate(xk(3,nkstot))
++    allocate(wk(nkstot))
++    allocate(et(nbnd, nkstot))
++    if (ijob .eq. 4) allocate(gauss_ee(nbnd, nkstot,nemax))
++   !if (ijob .eq. 4 .and. overhw) allocate(gauss_ep(nbnd, nkstot,nemax,nmodes,2))
++    if (ijob .eq. 5 .or. ijob .eq. 6) allocate(gauss_ep(nmodes, 2*ndemax-1, 1, 1, 1))
++    allocate(ikks(nksqtot))
++    allocate(ikqs(nksqtot))
++    allocate(el_ph_mat(nbnd, nbnd, nksqtot, nmodes))
++    read(uni) minus_q
++    read(uni)
++    read(uni)
++    read(uni) (((rtau(ii, jj, kk), ii = 1, 3), jj = 1, 48), kk = 1, nat)
++    read(uni)
++    read(uni)
++    read(uni) ((u(ii, jj), ii = 1, nmodes), jj = 1, nmodes)
++    read(uni)
++    read(uni)
++    read(uni)
++    read(uni)
++    read(uni) (((s(ii, jj, kk), ii = 1, 3), jj = 1, 3), kk = 1, 48)
++    read(uni) (invs(ii), ii = 1, 48)
++    read(uni)
++    read(uni)
++    read(uni)
++    read(uni)
++    read(uni) (t_rev(ii), ii = 1, 48)
++    read(uni) ((irt(ii, jj), ii = 1, 48), jj = 1, nat)
++    read(uni) ((xk(ii, jj), ii = 1, 3), jj = 1, nkstot)
++    read(uni) (wk(ii), ii = 1, nkstot)
++    read(uni) ((et(ii, jj), ii = 1, nbnd), jj = 1, nkstot)
++    read(uni)
++    read(uni)
++    read(uni)
++    read(uni) (ikks(ii), ii = 1, nksqtot)
++    read(uni) (ikqs(ii), ii = 1, nksqtot)
++    read(uni)
++    read(uni) (w2(ii), ii = 1, nmodes)
++    read(uni) ((dyn(ii, jj), ii = 1, nmodes), jj = 1, nmodes)
++    read(uni) ((((el_ph_mat(ii, jj, kk, ll), ii = 1, nbnd), &
++        jj = 1, nbnd), kk = 1, nksqtot), ll = 1, nmodes)
++    CALL cryst_to_cart (nkstot,xk,bg, 1)
++    do ll = 1, nmodes
++      if (w2(ll) > epsw2) then
++        omega(ll) = sqrt(w2(ll))
++        invw2(ll) = 1.d0/w2(ll)
++        invw (ll) = 1.d0/omega(ll)/rytoev/rytoev
++      else
++        omega(ll) = 0.d0
++        invw2(ll) = 0.d0
++        invw (ll) = 0.d0
++      end if
++    end do
++   !call star_q (xq, at, bg, nsym, s, invs, nq, sxq, isq, imq, .TRUE. )
++    if (ijob .eq. 5) then
++      weight0 = wq(iq) * wspin
++      do ii = 1, nwin
++        ! prepare look-up table for gaussian
++        allocate(gauss_ee(nsubbnd(ii), nkstot,nemax+ndemax))
++        gauss_ee = 0.d0
++        gauss_ep = 0.d0
++        do jj = 1, nemax+ndemax
++          do ik = 1, nkstot ! including both k and k+q
++            do isub = 1, nsubbnd(ii)
++              ibnd = isub + bpair(1,ii) - 1
++              ! try to avoid underflow
++              if (abs((et(ibnd, ik) - egrid(jj, ii, 1))*gtmp1) < 10.d0 &
++                  & .and. (et(ibnd, ik) - egrid(1,ii,1))*de(ii) >= 0.d0) then
++                gauss_ee(isub,ik,jj) = exp(sigma2 * (et(ibnd, ik) - egrid(jj, ii, 1))**2)
++              end if
++            end do
++          end do
++        end do
++        do kk = 1, 2*ndemax-1
++          do ll = 1, nmodes
++            if (abs((degrid(kk, ii, 1)- omega(ll))*gtmp2) < 10.d0 .or. abs((degrid(kk, ii, 1)+ omega(ll))*gtmp2) < 10.d0) then
++              gauss_ep(ll,kk,1,1,1) = sigmap_sqrttpi_m1*(exp(sigmap2 * (degrid(kk, ii, 1)- omega(ll))**2)+exp(sigmap2 * (degrid(kk, ii, 1)+ omega(ll))**2))
++            end if
++            F(kk,ii) = F(kk,ii) + gauss_ep(ll,kk,1,1,1)*wq(iq)
++          end do
++        end do
++        ! prepare look-up table for elph matrix
++        allocate(el_ph_abs(nmodes, nmodes, nsubbnd(ii), nsubbnd(ii), nksqtot))
++        do jpert = 1, nmodes
++          do ipert = 1, nmodes
++            do ik = 1, nksqtot
++              do isub = 1, nsubbnd(ii)
++                ibnd = isub + bpair(1,ii) - 1
++                do jsub = 1, nsubbnd(ii)
++                  jbnd = jsub + bpair(1,ii) - 1
++                  el_ph_abs(ipert, jpert, jsub, isub, ik) =  &
++                        conjg(el_ph_mat(jbnd, ibnd, ik, ipert)) &
++                      * el_ph_mat(jbnd, ibnd, ik, jpert)
++                enddo
++              enddo
++            enddo
++          enddo
++        enddo
++        do jj = 1, nemax
++          do kk = max(ndemax+1-jj,1), min(2*ndemax-1,nemax+ndemax)
++            el_ph_sum = (0.0d0, 0.0d0)
++            el_ph_lr  = 0.d0
++            vtmp1 = 0.0d0
++            do ik = 1, nksqtot
++              ikk = ikks(ik)
++              ikq = ikqs(ik)
++              weight = weight0 * wk(ikk)
++              do isub = 1, nsubbnd(ii)
++                if (gauss_ee(isub,ikk,jj) > 0.d0) then
++                  weight1 = weight * gauss_ee(isub,ikk,jj)
++                  weight2 = weight * gauss_ee(isub,ikk,kk+jj-ndemax)
++                  ! long-range term
++                  if (gauss_ee(isub,ikq,kk+jj-ndemax) > 0.d0) then
++                     el_ph_lr = el_ph_lr + (weight1 * gauss_ee(isub,ikq,kk+jj-ndemax) + weight2 * gauss_ee(isub,ikq,jj))
++                  end if
++                  ! all
++                  do jsub = 1, nsubbnd(ii)
++                    ! absorption
++                    if (gauss_ee(jsub,ikq,kk+jj-ndemax) > 0.d0) then
++                      wmnkq = (weight1 * gauss_ee(jsub,ikq,kk+jj-ndemax) + weight2 * gauss_ee(jsub,ikq,jj))
++                      vtmp1 = vtmp1 + wmnkq
++                      do jpert = 1, nmodes
++                        do ipert = 1, nmodes
++                          el_ph_sum(ipert, jpert) = el_ph_sum(ipert, jpert) &
++                              + el_ph_abs(ipert, jpert, jsub, isub, ik) * wmnkq
++                        enddo
++                      enddo
++                    endif
++                  enddo
++                endif
++              enddo
++            enddo
++            call symdyn_munu_new(el_ph_sum, u, xq, s, invs, rtau, irt, at, &
++                bg, nsymq, nat, irotmq, minus_q)
++            do ll = 1, nmodes
++              if (invw2(ll) .gt. 0.d0) then
++                factor = 0.5d0  * invw2(ll)
++                v1(ll, kk, jj, ii) = v1(ll, kk, jj, ii) + vtmp1
++                gbuf = 0.0d0
++                do mu = 1, nmodes
++                  do vu = 1, nmodes
++                    gbuf = gbuf + dble(conjg(dyn(mu, ll)) * &
++                        el_ph_sum(mu, vu) * dyn(vu, ll))
++                  enddo
++                enddo
++                gavg(ll, kk, jj, ii) = gavg(ll, kk, jj, ii) + gbuf * factor * gauss_ep(ll,kk,1,1,1)
++                gavg_lr(ll, kk, jj, ii) = gavg_lr(ll, kk, jj, ii) + el_ph_lr * invq2 * gauss_ep(ll,kk,1,1,1) * invw(ll)
++              end if
++            enddo
++          enddo ! ndemax
++        enddo ! nemax
++        deallocate(gauss_ee)
++        deallocate(el_ph_abs)
++      enddo ! nwin
++    endif
++
++    deallocate(xk)
++    deallocate(wk)
++    deallocate(et)
++    if (ijob .eq. 5 .and. allocated(gauss_ee)) deallocate(gauss_ee)
++    if (ijob .eq. 5 .and. allocated(gauss_ep)) deallocate(gauss_ep)
++    deallocate(ikks)
++    deallocate(ikqs)
++    deallocate(el_ph_mat)
++  enddo
++  close(uni, status = 'keep')
++
++  if (ijob .eq. 5) then
++    do ii = 1, nwin
++      do jj = 1, nemax
++        do kk = 1, 2*ndemax-1
++          do nu = 1, nmodes
++            if (v1(nu, kk, jj, ii) .gt. 0.d0) then
++                gavg(nu, kk, jj, ii) = gavg(nu, kk, jj, ii) / v1(nu, kk, jj, ii)
++                gavg_lr(nu, kk, jj, ii) = gavg_lr(nu, kk, jj, ii) / v1(nu, kk, jj, ii)
++            endif
++          enddo
++        enddo
++      enddo
++    enddo
++  endif
++
++  open(uno, file = trim(prefix)//'.epic.g2', form = 'formatted', status = 'replace')
++  write(6, '("Writing file ", a)') trim(prefix)
++  if (ijob .eq. 5) then
++    write(uno, '(2i8)') nwin, nmodes
++    do ii = 1, nwin
++      write(uno, '(2e28.18e3, 2i8)') ee(ii), de(ii), ne(ii), nde(ii)
++    enddo
++    write(fmt, '("(", i0, "e30.18e3)")') nmodes
++    write(uno, fmt) (0.0d0, nu = 1, nmodes)
++    write(fmt, '("(3i8, ", i0, "e18.8e3)")') nmodes
++    do ii = 1, nwin
++      do jj = 1, ne(ii)
++        do kk = 1, 2*ndemax -1
++          write(uno, fmt) ii, jj, kk, (gavg(nu, kk, jj, ii), &
++              nu = 1, nmodes)
++        enddo
++      enddo
++    enddo
++    open(uno2, file = trim(prefix)//'.epic.F', form = 'formatted', status = 'replace')
++    write(uno2, '(2i8)') nwin, nmodes
++    do ii = 1, nwin
++      do kk = 1, 2*ndemax -1
++        write(uno2, '(2i8, e18.8e3)') ii, kk, F(kk,ii)
++      enddo
++    enddo
++    close(uno2, status = 'keep')
++    open(uno2, file = trim(prefix)//'.epic.invq2', form = 'formatted', status = 'replace')
++    write(uno2, '(2i8)') nwin, nmodes
++    do ii = 1, nwin
++      write(uno2, '(2e28.18e3, 2i8)') ee(ii), de(ii), ne(ii), nde(ii)
++    enddo
++    write(fmt, '("(", i0, "e30.18e3)")') nmodes
++    write(uno2, fmt) (0.0d0, nu = 1, nmodes)
++    write(fmt, '("(3i8, ", i0, "e18.8e3)")') nmodes
++    do ii = 1, nwin
++      do jj = 1, ne(ii)
++        do kk = 1, 2*ndemax -1
++          write(uno2, fmt) ii, jj, kk, (gavg_lr(nu, kk, jj, ii), &
++              nu = 1, nmodes)
++        enddo
++      enddo
++    enddo
++    close(uno2, status = 'keep')
++  endif
++  close(uno, status = 'keep')
++
++  deallocate(x_q)
++  deallocate(wq)
++  deallocate(w2)
++  deallocate(dyn)
++  deallocate(irt)
++  deallocate(rtau)
++  deallocate(u)
++  deallocate(el_ph_sum)
++
++end program epic
+diff -urN q-e-qe-6.3/PHonon/PH/frohlich.f90 q-e-qe-6.3-EPIC/PHonon/PH/frohlich.f90
+--- q-e-qe-6.3/PHonon/PH/frohlich.f90	1970-01-01 07:30:00.000000000 +0730
++++ q-e-qe-6.3-EPIC/PHonon/PH/frohlich.f90	2020-09-16 13:36:44.446921184 +0800
+@@ -0,0 +1,620 @@
++!
++! Copyright (C) 2001-2012 Quantum ESPRESSO group
++! This file is distributed under the terms of the
++! GNU General Public License. See the file `License'
++! in the root directory of the present distribution,
++! or http://www.gnu.org/copyleft/gpl.txt .
++!
++!--------------------------------------------------------------------
++program frohlich
++!--------------------------------------------------------------------
++!
++!  This program
++!  - reads a dynamical matrix file produced by the phonon code
++!  - adds the nonanalytical part (if Z* and epsilon are read from file),
++!    applies the chosen Acoustic Sum Rule (if q=0)
++!  - diagonalise the dynamical matrix
++!  - calculates IR and Raman cross sections (if Z* and Raman tensors
++!    are read from file, respectively)
++!  - calculates spherical-averged Frohlich coupling strength (by Deng TQ)
++!  - writes the results to files, both for inspection and for plotting
++!
++!  Input data (namelist "input")
++!
++!  fildyn  character input file containing the dynamical matrix
++!                    (default: fildyn='matdyn')
++!  q(3)      real    calculate LO modes (add nonanalytic terms) along
++!                    the direction q (cartesian axis, default: q=(0,0,0) )
++!  amass(nt) real    mass for atom type nt, amu
++!                    (default: amass is read from file fildyn)
++!  asr   character   indicates the type of Acoustic Sum Rule imposed
++!                     - 'no': no Acoustic Sum Rules imposed (default)
++!                     - 'simple':  previous implementation of the asr used
++!                     (3 translational asr imposed by correction of
++!                     the diagonal elements of the dynamical matrix)
++!                     - 'crystal': 3 translational asr imposed by optimized
++!                     correction of the dyn. matrix (projection).
++!                     - 'one-dim': 3 translational asr + 1 rotational asr
++!                     imposed by optimized correction of the dyn. mat. (the
++!                     rotation axis is the direction of periodicity; it
++!                     will work only if this axis considered is one of
++!                     the cartesian axis).
++!                     - 'zero-dim': 3 translational asr + 3 rotational asr
++!                     imposed by optimized correction of the dyn. mat.
++!                     Note that in certain cases, not all the rotational asr
++!                     can be applied (e.g. if there are only 2 atoms in a
++!                     molecule or if all the atoms are aligned, etc.).
++!                     In these cases the supplementary asr are cancelled
++!                     during the orthonormalization procedure (see below).
++!                     Finally, in all cases except 'no' a simple correction
++!                     on the effective charges is performed (same as in the
++!                     previous implementation).
++!  axis    integer    indicates the rotation axis for a 1D system
++!                     (1=Ox, 2=Oy, 3=Oz ; default =3)
++!  lfroh   logical    .true. to calculate Frohlich coupling strength
++!                     Note!!! Currently only designed for 3D materials
++!                     (default: lfroh=.false.)
++!  nmesh   integer    number of angular sampling points for q vector
++!                     used for spherical averaging
++!                     over both polar and azimuthal angle
++!                     (default: nmesh=11)
++!  lperm   logical    .true. to calculate Gamma-point mode contributions to
++!                     dielectric permittivity tensor
++!                     (default: lperm=.false.)
++!  lplasma logical    .true. to calculate Gamma-point mode effective plasma 
++!                     frequencies, automatically triggers lperm = .true. 
++!                     (default: lplasma=.false.)
++!  filout  character output file containing phonon frequencies and normalized
++!                    phonon displacements (i.e. eigenvectors divided by the
++!                    square root of the mass and then normalized; they are
++!                    not orthogonal)
++!                    (default: filout='dynmat.out')
++!  fileig  character output file containing phonon frequencies and eigenvectors
++!                    of the dynamical matrix (they are orthogonal)
++!                    (default: fileig=' ')
++!  filmol  character as above, in a format suitable for 'molden'
++!                    (default: filmol='dynmat.mold')
++!  filxsf  character as above, in axsf format suitable for xcrysden
++!                    (default: filxsf='dynmat.axsf')
++!  loto_2d logical set to .true. to activate two-dimensional treatment of LO-TO splitting.
++!
++  USE kinds, ONLY: DP
++! USE mp,         ONLY : mp_bcast
++! USE mp_global,  ONLY : mp_startup, mp_global_end
++! USE mp_world,   ONLY : world_comm
++  USE io_global,  ONLY : ionode, ionode_id, stdout
++  USE environment, ONLY : environment_start, environment_end
++  USE io_dyn_mat,  ONLY : read_dyn_mat_param, read_dyn_mat_header, &
++                         read_dyn_mat, read_dyn_mat_tail
++  USE constants,   ONLY : amu_ry, pi, tpi, fpi, eps8, &
++                          RY_TO_CMM1, AU_PS, &
++                          RYTOEV, BOHR_RADIUS_ANGS
++  USE dynamical
++  USE rigid,       ONLY: dyndiag, nonanal
++  !
++  implicit none
++  integer, parameter :: ntypx = 10
++  character(len=256):: fildyn, filout, filmol, filxsf, fileig
++  character(len=3) :: atm(ntypx)
++  character(len=10) :: asr
++  logical :: lread, gamma_, gamma, loto_2d
++  complex(DP), allocatable :: z(:,:)
++  real(DP) :: amass(ntypx), amass_(ntypx), eps0(3,3), qeq, inveps(3,3), a0, omega, &
++       at(3,3), bg(3,3), q(3), q_(3), buffer
++  real(DP), allocatable :: w2(:)
++  integer :: nat, na, nt, ntyp, iout, axis, nspin_mag, ios, i, j
++  real(DP) :: celldm(6)
++  logical :: xmldyn, lrigid, lraman, lperm, lplasma, lfroh
++  logical, external :: has_xml
++  integer :: ibrav, nqs
++  integer, allocatable :: itau(:)
++  ! number of uniform sampling over theta and phi
++  integer :: nmesh
++  ! direction vector of q, angle theta and phi in spherical coordinates
++  real(DP) :: qhat(3), theta, phi, dx, dy
++  ! uniform sampling over theta and phi for simpson integration
++  real(DP), allocatable :: q2gl2_theta_phi(:,:,:), w_theta_phi(:,:,:)
++  ! spherical averaged |q|^2|g^l|^2
++  real(DP), allocatable :: q2gl2(:), wavg(:)
++  ! uniform sampling over theta and phi for simpson integration
++  real(DP), allocatable :: inveps_r_theta_phi(:,:,:)
++  ! spherical averaged inverse eps_r
++  real(DP), allocatable :: inveps_r(:)
++  ! work space for dynamic matrix
++  complex(DP), allocatable :: dyn_work(:,:,:,:)
++  ! work space for matching branch by similarity
++  complex(DP), allocatable :: tmp_z(:,:)
++  real(DP), allocatable :: abs_similarity(:,:), tmp_w2(:)
++  logical, allocatable :: mask(:)
++  integer :: location(1), nu, nv
++  namelist /input/ amass, asr, axis, fildyn, filout, filmol, filxsf, &
++                   fileig, lperm, lplasma, q, loto_2d, lfroh, nmesh
++  INTRINSIC sin, cos
++  !
++  ! code is parallel-compatible but not parallel
++  !
++! CALL mp_startup()
++! CALL environment_start('FROHLICH')
++  !
++  IF (ionode) CALL input_from_file ( )
++  !
++  asr  = 'no'
++  axis = 3
++  fildyn='matdyn'
++  filout='dynmat.out'
++  filmol='dynmat.mold'
++  filxsf='dynmat.axsf'
++  fileig=' '
++  amass(:)=0.0d0
++  q(:)=0.0d0
++  lperm=.false.
++  lplasma=.false.
++  lfroh=.false.
++  loto_2d=.false.
++  nmesh = 11
++  !
++  IF (ionode) read (5,input, iostat=ios)
++  ! for simpson, nmesh should be odd
++  nmesh = (nmesh / 2) * 2 + 1
++
++! CALL mp_bcast(ios, ionode_id, world_comm)
++  CALL errore('dynmat', 'reading input namelist', ABS(ios))
++  !
++! CALL mp_bcast(asr,ionode_id, world_comm)
++! CALL mp_bcast(axis,ionode_id, world_comm)
++! CALL mp_bcast(amass,ionode_id, world_comm)
++! CALL mp_bcast(fildyn,ionode_id, world_comm)
++! CALL mp_bcast(filout,ionode_id, world_comm)
++! CALL mp_bcast(filmol,ionode_id, world_comm)
++! CALL mp_bcast(fileig,ionode_id, world_comm)
++! CALL mp_bcast(filxsf,ionode_id, world_comm)
++! CALL mp_bcast(q,ionode_id, world_comm)
++! CALL mp_bcast(nmesh,ionode_id, world_comm)
++  !
++  IF (ionode) inquire(file=fildyn,exist=lread)
++! CALL mp_bcast(lread, ionode_id, world_comm)
++  IF (lread) THEN
++     IF (ionode) WRITE(6,'(/5x,a,a)') 'Reading Dynamical Matrix from file '&
++                                     , TRIM(fildyn)
++  ELSE
++     CALL errore('dynmat', 'File '//TRIM(fildyn)//' not found', 1)
++  END IF
++  !
++  ntyp = ntypx ! avoids spurious out-of-bound errors
++  xmldyn=has_xml(fildyn)
++  IF (xmldyn) THEN
++     CALL read_dyn_mat_param(fildyn,ntyp,nat)
++     ALLOCATE (m_loc(3,nat))
++     ALLOCATE (tau(3,nat))
++     ALLOCATE (ityp(nat))
++     ALLOCATE (zstar(3,3,nat))
++     ALLOCATE (dchi_dtau(3,3,3,nat) )
++     CALL read_dyn_mat_header(ntyp, nat, ibrav, nspin_mag, &
++             celldm, at, bg, omega, atm, amass_, tau, ityp, &
++             m_loc, nqs, lrigid, eps0, zstar, lraman, dchi_dtau)
++     IF (nqs /= 1) CALL errore('dynmat','only q=0 matrix allowed',1)
++     a0=celldm(1) ! define alat
++     ALLOCATE (dyn(3,3,nat,nat) )
++     CALL read_dyn_mat(nat,1,q_,dyn(:,:,:,:))
++     CALL read_dyn_mat_tail(nat)
++     IF(asr.ne.'no') THEN
++         CALL set_asr ( asr, axis, nat, tau, dyn, zstar )
++     END IF
++     IF (ionode) THEN
++        DO nt=1, ntyp
++           IF (amass(nt) <= 0.0d0) amass(nt)=amass_(nt)
++        END DO
++     END IF
++  ELSE
++     IF (ionode) THEN
++        CALL readmat2 ( fildyn, asr, axis, nat, ntyp, atm, a0, &
++                        at, omega, amass_, eps0, q_ )
++        DO nt=1, ntyp
++           IF (amass(nt) <= 0.0d0) amass(nt)=amass_(nt)/amu_ry
++        END DO
++     END IF
++  ENDIF
++  !
++  IF (ionode) THEN
++     !
++     ! from now on, execute on a single processor
++     !
++     gamma_ = ( abs( q_(1)**2+q_(2)**2+q_(3)**2 ) < 1.0d-8 )
++     gamma  = ( abs( q (1)**2+q (2)**2+q (3)**2 ) < 1.0d-8 )
++     !
++     IF (gamma_ .and. lfroh .and. gamma) THEN
++        ALLOCATE (q2gl2_theta_phi(3*nat,nmesh,nmesh) )
++        ALLOCATE (w_theta_phi(3*nat,nmesh,nmesh) )
++        ALLOCATE (inveps_r_theta_phi(1,nmesh,nmesh) )
++        ALLOCATE (q2gl2(3*nat) )
++        ALLOCATE (wavg(3*nat) )
++        ALLOCATE (inveps_r(1) )
++        ALLOCATE (abs_similarity(3*nat,3*nat) )
++        ALLOCATE (mask(3*nat) )
++        ALLOCATE (tmp_w2(3*nat) )
++        ALLOCATE (dyn_work(3,3,nat,nat) )
++        ALLOCATE (itau(nat))
++        DO na=1,nat
++           itau(na)=na
++        END DO
++        ALLOCATE ( z(3*nat,3*nat), w2(3*nat) )
++        dy = pi  / dble(nmesh-1)
++        dx = tpi / dble(nmesh-1)
++        DO i = 1, nmesh ! sampling phi
++           phi = dy * dble(i-1)
++           DO j = 1, nmesh ! sampling theta
++              theta = dx * dble(j-1)
++              ! generate direction vector \hat{q}
++              qhat(1) = cos(theta) * sin(phi)
++              qhat(2) = sin(theta) * sin(phi)
++              qhat(3) =              cos(phi)
++              qeq = (qhat(1)*(eps0(1,1)*qhat(1)+eps0(1,2)*qhat(2)+eps0(1,3)*qhat(3))+      &
++                    &qhat(2)*(eps0(2,1)*qhat(1)+eps0(2,2)*qhat(2)+eps0(2,3)*qhat(3))+      &
++                    &qhat(3)*(eps0(3,1)*qhat(1)+eps0(3,2)*qhat(2)+eps0(3,3)*qhat(3)))/     &
++                    &(qhat(1)**2 + qhat(2)**2 + qhat(3)**2)
++              DO nu = 1, 3
++                 DO nv = 1, 3
++                    inveps(nv,nu) = qhat(nv)*qhat(nu)/qeq/qeq/(qhat(1)**2+qhat(2)**2+qhat(3)**2)
++                 END DO
++              END DO
++              inveps_r_theta_phi(1,j,i) = sin(phi)/qeq
++              dyn_work = dyn
++              ! add nonanalytical part and diagonalize
++              CALL nonanal ( nat, nat, itau, eps0, qhat, zstar, omega, dyn_work )
++              CALL dyndiag(nat,ntyp,amass,ityp,dyn_work,w2,z)
++              ! ... order phonon dispersions using similarity of eigenvalues
++              ! ... Courtesy of Takeshi Nishimatsu, IMR, Tohoku University 
++              IF (.NOT.ALLOCATED(tmp_z)) THEN
++                 ALLOCATE(tmp_z(3*nat,3*nat))
++              ELSE
++                 abs_similarity = ABS ( MATMUL ( CONJG( TRANSPOSE(z)), tmp_z ) )
++                 mask(:) = .true.
++                 DO na=1,3*nat
++                    location = maxloc( abs_similarity(:,na), mask(:) )
++                    mask(location(1)) = .false.
++                    tmp_w2(na) = w2(location(1))
++                    tmp_z(:,na) = z(:,location(1))
++                 END DO
++                 w2(:) = tmp_w2(:)
++                 z(:,:)= tmp_z(:,:)
++              END IF
++              tmp_z(:,:) = z(:,:)
++              CALL polar_mode_vertex_samp(nat,inveps,z,zstar,w2,omega,q2gl2_theta_phi(:,j,i))
++              DO na = 1,3*nat
++                 IF (w2(na) > eps8) THEN
++                    w_theta_phi(na,j,i)     = sqrt(w2(na)) * sin(phi)
++                    q2gl2_theta_phi(na,j,i) = q2gl2_theta_phi(na,j,i) * sin(phi)
++                 ELSE
++                    w_theta_phi(na,j,i)     = -sqrt(abs(w2(na))) * sin(phi)
++                    q2gl2_theta_phi(na,j,i) = 0.d0
++                 END IF
++              END DO
++           END DO ! sampling theta
++        END DO ! sampling phi
++        call simp2(3*nat, nmesh, nmesh, q2gl2_theta_phi, dx, dy, q2gl2)
++        call simp2(3*nat, nmesh, nmesh, w_theta_phi,     dx, dy, wavg)
++        call simp2(1    , nmesh, nmesh, inveps_r_theta_phi, dx, dy, inveps_r)
++        q2gl2 = q2gl2 / fpi
++        wavg  = wavg  / fpi
++        inveps_r  = inveps_r / fpi
++        !
++        ! sort according to wavg
++        DO na = 1, 3*nat
++           location(1)        = minloc(wavg(na:3*nat),dim=1) + na - 1
++           buffer             = wavg(na)
++           wavg(na)           = wavg(location(1))
++           wavg(location(1))  = buffer
++           buffer             = q2gl2(na)
++           q2gl2(na)          = q2gl2(location(1))
++           q2gl2(location(1)) = buffer
++        END DO
++        !
++        WRITE(6,*)
++        WRITE(6,'("# mode    freq             |q|^2|g^l|^2           rate")')
++        WRITE(6,'("#        [cm^-1]          [eV^2 Ang^{-2}]         THz")')
++        OPEN (unit=20,file=TRIM(fildyn)//'.froh',status='unknown',form='formatted')
++        WRITE(20,'("# mode    freq             |q|^2|g^l|^2           rate")')
++        WRITE(20,'("#        [cm^-1]          [eV^2 Ang^{-2}]         THz")')
++        DO na = 1, 3*nat
++           IF (wavg(na) > 1.d-4) THEN
++              WRITE(6,'(i5,f14.6,2e22.10)') na,wavg(na)*RY_TO_CMM1, &
++                     q2gl2(na) * RYTOEV**2 / BOHR_RADIUS_ANGS**2, & 
++                     q2gl2(na) *omega /pi /sqrt(4.0d0*wavg(na)) / ( exp(wavg(na)/0.026*RYTOEV) -1.0)/ AU_PS / 2.0
++              WRITE(20,'(i5,f14.6,2e22.10)') na,wavg(na)*RY_TO_CMM1, &
++                     q2gl2(na) * RYTOEV**2 / BOHR_RADIUS_ANGS**2, & 
++                     q2gl2(na) *omega /pi /sqrt(4.0d0*wavg(na)) / ( exp(wavg(na)/0.026*RYTOEV) -1.0)/ AU_PS / 2.0
++           ELSE
++              WRITE(6,'(i5,f14.6,2e22.10)') na,wavg(na)*RY_TO_CMM1, &
++                     q2gl2(na) * RYTOEV**2 / BOHR_RADIUS_ANGS**2, & 
++                     0.0
++              WRITE(20,'(i5,f14.6,2e22.10)') na,wavg(na)*RY_TO_CMM1, &
++                     q2gl2(na) * RYTOEV**2 / BOHR_RADIUS_ANGS**2, & 
++                     0.0
++           END IF
++        END DO
++        WRITE(20,'(a)') 'eps_r'
++        WRITE(20,'(f14.6)') 1.d0/inveps_r(1)
++        CLOSE(unit=20)
++     ELSE
++        IF (gamma_ .and. .not.loto_2d) THEN
++           ALLOCATE (itau(nat))
++           DO na=1,nat
++              itau(na)=na
++           END DO
++           CALL nonanal ( nat, nat, itau, eps0, q, zstar, omega, dyn )
++           DEALLOCATE (itau)
++        END IF
++        !
++        ALLOCATE ( z(3*nat,3*nat), w2(3*nat) )
++        CALL dyndiag(nat,ntyp,amass,ityp,dyn,w2,z)
++        !
++        IF (filout.eq.' ') then
++           iout=6
++        ELSE
++           iout=4
++           OPEN (unit=iout,file=filout,status='unknown',form='formatted')
++        END IF
++        CALL writemodes(nat,q_,w2,z,iout)
++        IF(iout .ne. 6) close(unit=iout)
++        IF (fileig .ne. ' ') THEN
++          OPEN (unit=15,file=TRIM(fileig),status='unknown',form='formatted')
++          CALL write_eigenvectors (nat,ntyp,amass,ityp,q_,w2,z,15)
++          CLOSE (unit=15)
++        ENDIF
++        CALL writemolden (filmol, gamma_, nat, atm, a0, tau, ityp, w2, z)
++        CALL writexsf (filxsf, gamma_, nat, atm, a0, at, tau, ityp, z)
++        IF (gamma_) THEN 
++           CALL RamanIR (nat, omega, w2, z, zstar, eps0, dchi_dtau)
++           IF (lperm .OR. lplasma) THEN
++               CALL polar_mode_permittivity(nat,eps0,z,zstar,w2,omega, &
++                                            lplasma)
++               IF ( ABS( q(1)**2+q(2)**2+q(3)**2 ) > 1.0d-8 ) &
++                  WRITE(6,'(5x,a)') 'BEWARE: phonon contribution to &
++                  & permittivity computed with TO-LO splitting'
++           ENDIF
++           IF (lfroh .and. .not. gamma) THEN
++               qeq = (q(1)*(eps0(1,1)*q(1)+eps0(1,2)*q(2)+eps0(1,3)*q(3))+      &
++                    & q(2)*(eps0(2,1)*q(1)+eps0(2,2)*q(2)+eps0(2,3)*q(3))+      &
++                    & q(3)*(eps0(3,1)*q(1)+eps0(3,2)*q(2)+eps0(3,3)*q(3))) /    &
++                    &(q(1)**2 + q(2)**2 + q(3)**2)
++               DO nu = 1, 3
++                  DO nv = 1, 3
++                     inveps(nv,nu) = q(nv)*q(nu)/qeq/qeq/(q(1)**2+q(2)**2+q(3)**2)
++                  END DO
++               END DO
++               CALL polar_mode_vertex_prt(nat,inveps,z,zstar,w2,omega)
++           ENDIF
++        ENDIF
++     ENDIF
++  ENDIF
++  !
++  IF (xmldyn) THEN
++     DEALLOCATE (m_loc)
++     DEALLOCATE (tau)
++     DEALLOCATE (ityp)
++     DEALLOCATE (zstar)
++     DEALLOCATE (dchi_dtau)
++     DEALLOCATE (dyn)
++  ENDIF
++  !
++! CALL environment_end('FROHLICH')
++  !
++! CALL mp_global_end()
++  !
++end program frohlich
++!
++!----------------------------------------------------------------------
++subroutine polar_mode_vertex_samp( nat, inveps, z, zstar, w2, omega, q2gl2)
++  !----------------------------------------------------------------------
++
++  !
++  ! Algorithm from Fennie and Rabe, Phys. Rev. B 68, 184111 (2003)
++  !
++  USE kinds, ONLY: DP
++  USE constants, ONLY :fpi, eps8, e2, &
++                       AMU_RY, RY_TO_CMM1, &
++                       RYTOEV, BOHR_RADIUS_ANGS
++  implicit none
++  !number of atoms
++  integer, intent(in) :: nat
++ 
++  !angular averaged dyadic \hat{q}\hat{q} / (\hat{q} \cdot \epsilon^\inf \cdot \hat{q})
++  real(DP), intent(in) :: inveps(3,3)
++ 
++  !displacement eigenvectors
++  complex(DP), intent(in) :: z(3*nat,3*nat)
++ 
++  !born effective charges
++  real(DP), intent(in) :: zstar(3,3,nat)
++ 
++  !square of the phonon frequencies
++  real(DP), intent(in) :: w2(3*nat)
++ 
++  !cell volume
++  real(DP), intent(in) :: omega
++ 
++  !angular average times |q|^2
++  ! |q|^2 (4 \pi)^{-1} \int d\theta d\phi sin(\phi) |g^L|^2
++  real(DP), intent(out) :: q2gl2(3*nat)
++ 
++  !mode index
++  integer :: imode
++ 
++  !atom index
++  integer :: iat
++ 
++  !atom vector component index
++  integer :: iat_component
++ 
++  !Cartesian direction indices
++  integer :: i, j
++ 
++  !mode effective charge
++  real(DP) :: meffc(3)
++
++  !Calculate contributions by mode
++  DO imode = 1,3*nat
++   
++     ! Calculate the mode effective charge
++     meffc = 0.0d0
++     DO i = 1 , 3
++        DO iat = 1 , nat
++           DO j = 1, 3
++              iat_component = 3*(iat-1) + j
++ 
++              ! Equation (3) of Finnie and Rabe
++              ! Rydberg units = (e / sqrt(2)) * Bohr
++              meffc(i) = meffc(i) + zstar(i,j,iat)*z(iat_component,imode)* &
++                                    sqrt(AMU_RY)
++ 
++           END DO
++        END DO
++     END DO
++
++     ! Calculate the spherical averaged Frohlich vertex
++     q2gl2(imode) = 0.0d0
++     IF (w2(imode) > eps8) THEN
++        DO i = 1 , 3
++           DO j = 1 , 3
++              q2gl2(imode) = q2gl2(imode) + meffc(j) * inveps(j,i) * meffc(i)
++           END DO
++        END DO
++        q2gl2(imode) = q2gl2(imode) * (fpi * e2 / omega)**2 / AMU_RY / 2.0 / sqrt(w2(imode))
++     END IF
++  END DO
++  
++end subroutine polar_mode_vertex_samp
++!----------------------------------------------------------------------
++subroutine polar_mode_vertex_prt( nat, inveps, z, zstar, w2, omega)
++  !----------------------------------------------------------------------
++
++  !
++  ! Algorithm from Fennie and Rabe, Phys. Rev. B 68, 184111 (2003)
++  !
++  USE kinds, ONLY: DP
++  USE constants, ONLY :fpi, eps8, e2, &
++                       AMU_RY, RY_TO_CMM1, &
++                       RYTOEV, BOHR_RADIUS_ANGS
++  implicit none
++  !number of atoms
++  integer, intent(in) :: nat
++ 
++  !angular averaged dyadic \hat{q}\hat{q} / (\hat{q} \cdot \epsilon^\inf \cdot \hat{q})
++  real(DP), intent(in) :: inveps(3,3)
++ 
++  !displacement eigenvectors
++  complex(DP), intent(in) :: z(3*nat,3*nat)
++ 
++  !born effective charges
++  real(DP), intent(in) :: zstar(3,3,nat)
++ 
++  !square of the phonon frequencies
++  real(DP), intent(in) :: w2(3*nat)
++ 
++  !cell volume
++  real(DP), intent(in) :: omega
++ 
++  !mode index
++  integer :: imode
++ 
++  !atom index
++  integer :: iat
++ 
++  !atom vector component index
++  integer :: iat_component
++ 
++  !Cartesian direction indices
++  integer :: i, j
++ 
++  !mode effective charge
++  real(DP) :: meffc(3)
++
++  !frequency
++  real(DP) :: freq
++ 
++  !angular average times |q|^2
++  ! |q|^2 (4 \pi)^{-1} \int d\theta d\phi sin(\phi) |g^L|^2
++  real(DP) :: q2gl2(3*nat)
++ 
++  WRITE(6,*)
++  WRITE(6,'("# mode    freq           Z~*_x         Z~*_y         Z~*_z      &
++            &   |q|^2|g^l|^2")')
++  WRITE(6,'("#        [cm^-1]                  [e*Bohr/sqrt(2)]              &
++            &  [eV^2 Ang^{-2}]")')
++  
++  !Calculate contributions by mode
++  DO imode = 1,3*nat
++   
++     ! Calculate the mode effective charge
++     meffc = 0.0d0
++     DO i = 1 , 3
++        DO iat = 1 , nat
++           DO j = 1, 3
++              iat_component = 3*(iat-1) + j
++ 
++              ! Equation (3) of Finnie and Rabe
++              ! Rydberg units = (e / sqrt(2)) * Bohr
++              meffc(i) = meffc(i) + zstar(i,j,iat)*z(iat_component,imode)* &
++                                    sqrt(AMU_RY)
++ 
++           END DO
++        END DO
++     END DO
++
++     ! Calculate the spherical averaged Frohlich vertex
++     q2gl2(imode) = 0.0d0
++     IF (w2(imode) > eps8) THEN
++        DO i = 1 , 3
++           DO j = 1 , 3
++              q2gl2(imode) = q2gl2(imode) + meffc(j) * inveps(j,i) * meffc(i)
++           END DO
++        END DO
++        q2gl2(imode) = q2gl2(imode) * (fpi * e2 / omega)**2 / AMU_RY  / 2.0 / sqrt(w2(imode))
++     END IF
++    
++     !Mode frequency [units of sqrt(Ry)])
++     freq = sqrt(abs(w2(imode)))
++     IF (w2(imode) < 0.0_DP) freq = -freq
++ 
++     !write out mode index, mode effective charges, 
++     !          mode Frohlich vertex
++     WRITE(6,'(i5,5f14.6)') imode,freq*RY_TO_CMM1,meffc(1),meffc(2),meffc(3), &
++            (q2gl2(imode)) * RYTOEV**2 / BOHR_RADIUS_ANGS**2 
++  END DO
++  
++end subroutine polar_mode_vertex_prt
++!-----------------------------------------------------------------------
++SUBROUTINE simp2(nlead, mesh1, mesh2, func, dx, dy, asum)
++  !-----------------------------------------------------------------------
++  !
++  !     simpson's rule integration. 
++  !
++  USE kinds, ONLY: DP
++  IMPLICIT NONE
++  INTEGER, INTENT(in) :: nlead, mesh1, mesh2
++  real(DP), INTENT(in) :: dx, dy, func (nlead,mesh1,mesh2)
++  real(DP), INTENT(out):: asum(nlead)
++  !
++  INTEGER :: i, j, k
++  real(DP):: tmp_sum(nlead,mesh2)
++  !
++  asum = 0.0d0
++
++  tmp_sum = 0.0d0
++  DO i = 1, mesh2
++     DO j = 2, mesh1 - 1, 2
++        DO k = 1, nlead
++           tmp_sum(k,i) = tmp_sum(k,i) + func(k,j-1,i) + 4.0d0 * func(k,j,i) + func(k,j+1,i)
++        ENDDO
++     ENDDO
++  ENDDO
++  DO i = 2, mesh2 - 1, 2
++     DO k = 1, nlead
++        asum(k) = asum(k) + tmp_sum(k,i-1) + 4.0d0 * tmp_sum(k,i) + tmp_sum(k,i+1)
++     ENDDO
++  ENDDO
++
++  asum = asum * dx *dy / 9.0d0
++
++  RETURN
++END SUBROUTINE simp2
+diff -urN q-e-qe-6.3/PHonon/PH/make.depend q-e-qe-6.3-EPIC/PHonon/PH/make.depend
+--- q-e-qe-6.3/PHonon/PH/make.depend	2018-07-04 17:14:20.000000000 +0800
++++ q-e-qe-6.3-EPIC/PHonon/PH/make.depend	2020-09-13 14:44:45.270261376 +0800
+@@ -744,6 +744,8 @@
+ ep_matrix_element_wannier.o : phcom.o
+ epa.o : ../../Modules/constants.o
+ epa.o : ../../Modules/kind.o
++epic.o : ../../Modules/constants.o
++epic.o : ../../Modules/kind.o
+ find_irrep.o : ../../LR_Modules/lrcom.o
+ find_irrep.o : ../../Modules/control_flags.o
+ find_irrep.o : ../../Modules/ions_base.o
+@@ -757,6 +759,13 @@
+ find_mode_sym.o : ../../Modules/kind.o
+ find_mode_sym.o : ../../Modules/noncol.o
+ find_mode_sym.o : ../../PW/src/pwcom.o
++frohlich.o : ../../LR_Modules/dynmat_sub.o
++frohlich.o : ../../Modules/constants.o
++frohlich.o : ../../Modules/environment.o
++frohlich.o : ../../Modules/io_global.o
++frohlich.o : ../../Modules/kind.o
++frohlich.o : io_dyn_mat.o
++frohlich.o : rigid.o
+ generate_dynamical_matrix_c.o : ../../Modules/kind.o
+ generate_effective_charges_c.o : ../../Modules/io_global.o
+ generate_effective_charges_c.o : ../../Modules/kind.o
+diff -urN q-e-qe-6.3/PHonon/PH/Makefile q-e-qe-6.3-EPIC/PHonon/PH/Makefile
+--- q-e-qe-6.3/PHonon/PH/Makefile	2018-07-04 17:14:20.000000000 +0800
++++ q-e-qe-6.3-EPIC/PHonon/PH/Makefile	2020-09-13 14:44:33.428052966 +0800
+@@ -191,7 +191,7 @@
+ TLDEPS= bindir libs mods libdavid libcg lrmods
+ 
+ all : tldeps libs-ph ph.x dynmat.x matdyn.x q2r.x q2trans.x q2trans_fd.x lambda.x fqha.x q2qstar.x \
+-	alpha2f.x epa.x
++	alpha2f.x epa.x frohlich.x epic.x tau.epic.x
+ 
+ libs-ph : libph.a libphaux.a
+ 
+@@ -246,6 +246,20 @@
+                  $(PWOBJS) $(LRMODS) $(QEMODS) $(LIBOBJS) $(LIBS)
+ 	- ( cd ../../bin ; ln -fs ../PHonon/PH/$@ . )
+ 
++epic.x : epic.o libph.a $(PWOBJS) $(LRMODS) $(QEMODS) $(LIBOBJS)
++	$(LD) $(LDFLAGS) -o $@ epic.o libph.a \
++                 $(PWOBJS) $(LRMODS) $(QEMODS) $(LIBOBJS) $(LIBS)
++	- ( cd ../../bin ; ln -fs ../PHonon/PH/$@ . )
++
++tau.epic.x: tau.epic.o
++	$(LD) $(LDFLAGS) -o $@ tau.epic.o
++	- ( cd ../../bin ; ln -fs ../PHonon/PH/$@ . )
++
++frohlich.x : frohlich.o libphaux.a  libph.a $(PWOBJS) $(LRMODS) $(MODULES) $(LIBOBJS)
++	$(LD) $(LDFLAGS) -o $@ frohlich.o libphaux.a libph.a \
++		 $(PWOBJS) $(LRMODS) $(QEMODS) $(LIBOBJS) $(LIBS)
++	- ( cd ../../bin ; ln -fs ../PHonon/PH/$@ . )
++
+ #fqha.o :
+ #	$(MPIF90) $(FFLAGS_NOOPT) -c fqha.f90
+ 
+diff -urN q-e-qe-6.3/PHonon/PH/phq_readin.f90 q-e-qe-6.3-EPIC/PHonon/PH/phq_readin.f90
+--- q-e-qe-6.3/PHonon/PH/phq_readin.f90	2018-07-04 17:14:20.000000000 +0800
++++ q-e-qe-6.3-EPIC/PHonon/PH/phq_readin.f90	2020-09-13 10:55:02.667931625 +0800
+@@ -794,7 +794,7 @@
+      CALL errore('phq_readin','phonon with arbitrary occupations not tested',1)
+   !
+   !YAMBO >
+-  IF (elph.AND..NOT.(lgauss .or. ltetra).and..NOT.elph_yambo) CALL errore ('phq_readin', 'Electron-&
++  IF (elph.AND..NOT.(lgauss .or. ltetra).and..NOT.elph_yambo.and..NOT.elph_epa) CALL errore ('phq_readin', 'Electron-&
+        &phonon only for metals', 1)
+   !YAMBO <
+   IF (elph.AND.fildvscf.EQ.' ') CALL errore ('phq_readin', 'El-ph needs &
+diff -urN q-e-qe-6.3/PHonon/PH/tau.epic.f90 q-e-qe-6.3-EPIC/PHonon/PH/tau.epic.f90
+--- q-e-qe-6.3/PHonon/PH/tau.epic.f90	1970-01-01 07:30:00.000000000 +0730
++++ q-e-qe-6.3-EPIC/PHonon/PH/tau.epic.f90	2020-09-13 17:43:09.029807463 +0800
+@@ -0,0 +1,1526 @@
++  !============================================!
++  !============================================!
++  !! This code performs Boltzmann Transport
++  !! Equation in single-mode and constant
++  !! relaxation time approximations
++  !! (SMRTA and CRTA)
++  !! used for EPIC STAR
++  !! Writen by Deng Tianqi
++  !============================================!
++  program tauepic
++
++    integer, parameter  :: dp = kind(1.d0)
++    real(dp), parameter :: zero           = 0.0_dp
++    real(dp), parameter :: one           = 1.0_dp
++    real(dp), parameter :: two           = 2.0_dp
++    real(dp), parameter :: onethird      = one/3.0_dp
++    real(dp), parameter :: eps8             = 1.0E-8_dp
++    real(dp), parameter :: v2               = 1.196498266E+12 ! m^2.s^{-2}  velocity squared from R.a.u. to SI
++    real(dp), parameter :: pi               = 3.14159265358979323846_DP 
++    real(dp), parameter :: tpi              = two * pi
++    real(dp), parameter :: fpi              = 4.0_DP * pi
++    real(dp), parameter :: bohr_si          = 0.52917720859E-10_DP ! m
++    real(dp), parameter :: k_boltzmann_si   = 1.3806504E-23_DP    ! J K^-1 
++    real(dp), parameter :: c_si             = 2.99792458E+8_DP    ! m sec^-1
++    real(dp), parameter :: munought_si      = fpi*1.0E-7_DP       ! N A^-2
++    real(dp), parameter :: epsnought_si     = 1.0_DP / (munought_si * &
++                                                         c_si**2) ! F m^-1
++    real(dp), parameter :: h_planck_si      = 6.62606896E-34_DP   ! J s
++    real(dp), parameter :: hartree_si       = 4.35974394E-18_DP   ! J
++    real(dp), parameter :: electron_si      = 1.602176487E-19_DP  ! C  
++    real(dp), parameter :: electronvolt_si  = 1.602176487E-19_DP  ! J  
++    real(dp), parameter :: electronmass_si  = 9.10938215E-31_DP   ! kg
++
++    real(dp), parameter :: au_sec           = h_planck_si/tpi/hartree_si
++    real(dp), parameter :: au_ps            = au_sec * 1.0E+12_DP
++    real(dp), parameter :: au_terahertz     = au_ps
++    real(dp), parameter :: ry_to_thz        = 1.0_DP / au_terahertz / fpi
++    real(dp), parameter :: ry_to_cmm1       = 1.E+10_DP * ry_to_thz / c_si
++    real(dp), parameter :: autoev           = hartree_si / electronvolt_si
++    real(dp), parameter :: rytoev           = autoev / 2.0_DP
++    real(dp), parameter :: cmm1_to_ev       = rytoev / ry_to_cmm1
++    real(dp), parameter :: invkb            = electronvolt_si / k_boltzmann_si   ! eV^{-1}.K inverse Boltzmann const.
++    real(dp), parameter :: hbar             = h_planck_si / tpi /electronvolt_si ! eV.s      reduced Planck const.
++    real(dp), parameter :: sigmae_si        = (electron_si*bohr_si/(au_sec*2))**2 / (hartree_si/2.0) ! (C.m)^2.s^{-2}.J^{-1} or S^{-1}.m^2.s^{-1} 
++    real(dp), parameter :: e2ke             = electron_si **2 / fpi / epsnought_si ! e^2*k_e in J.m
++    real(dp), parameter :: h2b2me           = hbar ** 2 * electronvolt_si * 0.5d0 / electronmass_si ! hbar^2/2/m_e in eV.m^2
++
++    logical                                 :: crta, epic
++    logical                                 :: lfroh,thomasfermi, impurity, fixed_imp, fixed_n, rm_lr
++    integer                                 :: file_unit, file_unit2
++    integer                                 :: io
++    integer                                 :: i, j, ii, jj, nu          ! general counter
++    integer                                 :: nd, u, v                  ! counter for cartesian
++    integer                                 :: m                         ! counter for mu
++    integer                                 :: dummyi
++    integer                                 :: nlines, nmu
++    integer                                 :: nwin, nmodes, nev, nec, ndev, ndec, ndemax, ndegrid
++    integer                                 :: loc_ev, loc_ec
++    integer                                 :: loc_min, loc_max
++    integer, dimension(:), allocatable      :: dloc_wavg, en_bin, dloc_wfroh
++    integer, dimension(:,:,:), allocatable  :: dloc_weavg_v, dloc_weavg_c
++    character (len=100)                     :: prefix,frohname, dummyc
++    character (len=50)                      :: outfmt
++    character (len=50)                      :: epic_type
++    real(dp)                                :: tmp, factor
++    real(dp)                                :: gs, temp, temp1, temp2, invT, beta, volume
++    real(dp)                                :: mu1, mu2, dmu, scissor
++    real(dp)                                :: n_carrier, n_upper, n_lower
++    real(dp)                                :: en_mu, en_mu2
++    real(dp)                                :: covxy, covxy2, varxx, xbar, ybar, y2bar, slope, slope2,factor2
++    real(dp)                                :: ev, dev, ec, dec, Eg, e_eff
++    real(dp)                                :: enmin, enmax, de_dos
++    real(dp)                                :: eps_r, n_imp !, c2pl
++    real(dp), dimension(:),     allocatable :: en, dos, dos_u, dos_d
++    real(dp), dimension(:),     allocatable :: gavg_tmp, wavg, navg, mu, absdec, absdev, dendec, dendev
++    real(dp), dimension(:),     allocatable :: n_e, n_h, ntot
++    real(dp), dimension(:),     allocatable :: wfroh, c2froh, m_eff_b, m_eff_b2, cbrtdetv2, cbrtdetsig, nfroh, m_eff
++    real(dp), dimension(:),     allocatable :: invwfroh, LDm2, LDm2Debye
++    real(dp), dimension(:,:),   allocatable :: fe, feminusone, neg_dfde, tau, invtau_imp
++    real(dp), dimension(:,:,:), allocatable :: gavg_v, gavg_c, invtau, weavg_v, weavg_c, neavg_v, neavg_c
++    real(dp), dimension(:,:,:), allocatable :: gavg_lr_v, gavg_lr_c
++    real(dp), dimension(:,:,:), allocatable :: sigxx
++    real(dp), dimension(:,:,:,:), allocatable :: tdf
++    real(dp), dimension(:,:),   allocatable :: inv_sigma
++    real(dp), dimension(:,:,:), allocatable :: mob, mob_e, mob_h
++    real(dp), dimension(:,:,:), allocatable :: sigma, sigS, bigK
++    real(dp), dimension(:,:,:), allocatable :: sigma_e, sigS_e, bigK_e
++    real(dp), dimension(:,:,:), allocatable :: sigma_h, sigS_h, bigK_h
++    real(dp), dimension(:,:,:), allocatable :: S, PF, kappa
++    real(dp), dimension(:,:,:), allocatable :: S_e, PF_e, kappa_e
++    real(dp), dimension(:,:,:), allocatable :: S_h, PF_h, kappa_h
++    real(dp) :: curv_tmp(3,3)
++
++    !-------------------------------------------!
++    ! read input
++    !-------------------------------------------!
++    write(6, '("Reading standard input")')
++
++    read(5, '(a)') prefix    !! prefix
++    write(6,*) "Prefix is: ",prefix
++    read(5, *)     gs          !! spin degeneracy
++    write(6,*) "Spin degeneracy: ",gs
++    read(5, *)     temp1       !! temperature
++    write(6,*) "Temperature: ",temp1
++    read(5, '(a)') dummyc      !! lowest and highest chemical potentials, and
++                               !! perhaps scissor shift
++    read(dummyc, *,iostat=io)  mu1,mu2,scissor
++    if (io .ne. 0) then
++       read(dummyc, *,iostat=io)     mu1,mu2
++       scissor = zero
++    end if
++    write(6,*) "Scissor shift: ",scissor
++    read(5, '(a)') dummyc      !! number of chemical potential samples, and
++                               !! perhaps fixed carrier density
++    read(dummyc, *,iostat=io)  nmu,n_carrier
++    fixed_n = .true.
++    nmu = 1
++    if (io .ne. 0) then
++       read(dummyc, *,iostat=io)     nmu
++       fixed_n = .false.
++       n_carrier = zero
++    end if
++    if (fixed_n) then
++       write(6,*) "Computed at fixed doping: ",n_carrier
++    else
++       write(6,*) "Lowest and highest chemical potential to calculate: ",mu1,mu2
++    endif
++    read(5, *)     epic_type    !! type of EPIC STAR
++    read(5, *)     volume      !! cell volume in Ang^3
++    write(6,*) "Unit cell volume: ",volume
++    read(5,'(a)',iostat=io) frohname
++    if (io .eq. 0 .and. trim(frohname).ne.'') then
++       lfroh   = .true.
++       frohname=trim(frohname)
++       write(6,*) "Frohlich correction added"
++    else
++       lfroh   = .false.
++       frohname=''
++    end if
++
++    crta = .false.
++    thomasfermi = .false.
++    impurity = .false.
++    rm_lr = .false.
++    if (trim(epic_type) .eq. 'crta') then
++       crta = .true.
++       epic = .false.
++       write(6,*) "CRTA only"
++    elseif (trim(epic_type) .eq. 'eph') then
++       epic   = .true.
++       write(6,*) "With intrinsic el-ph interaction"
++    elseif (trim(epic_type) .eq. 'tf-eph') then
++       epic   = .true.
++       thomasfermi = .true.
++       write(6,*) "With Thomas-Fermi-screened el-ph interaction"
++    elseif (trim(epic_type) .eq. 'imp') then
++       epic   = .true.
++       thomasfermi = .true.
++       impurity = .true.
++       write(6,*) "With Thomas-Fermi-screened el-ph interaction and impurity"
++    else
++       stop 'wrong epic_type'
++    endif
++
++    if (impurity) then
++       read(5,*,iostat=io) n_imp, eps_r
++       write(6,*) 'n_imp = ', n_imp
++       n_imp = abs(n_imp)
++       if (io .eq. 0 .and. n_imp .ne. 0.d0) then
++          fixed_imp=.true. ! fixed impurity concentration
++          write(6,*) "Computed at fixed impurity density ",n_imp
++       else
++          fixed_imp=.false. ! impurity concentration according to charge neutrality
++          write(6,*) "Impurity density equal to carrier density"
++       end if
++    end if
++
++    nd = 3
++    if (nmu <= 0)           stop 'wrong number of chemical potential samples'
++    if (temp1 < 0. .or. temp2 < 0.)          stop 'wrong temperature'
++    if (mu2 < mu1)          stop 'wrong order of chemical potential'
++
++    temp = temp1
++    invT = 1.d0  / temp        !! 1 / T
++    beta = invT * invkb
++    volume = volume * 1.e-30_DP  !! to m^3
++      
++    dmu = zero 
++    if (nmu>1) dmu = (mu2-mu1)/dble(nmu-1)
++
++    if (trim(prefix) .NE. '') then
++       prefix=trim(prefix)//'.'
++    end if
++    !-------------------------------------------!
++    ! get number of lines, allocate and initialize
++    !-------------------------------------------!
++
++    nlines   = count_lines(trim(prefix)//'transdos')
++    if (nlines .ne. count_lines(trim(prefix)//'sigxx')) stop ' nlines not matching between dos and sigxx'
++
++    allocate(mu      (nmu))
++    allocate(n_e     (nmu))
++    allocate(n_h     (nmu))
++    allocate(ntot    (nmu))
++    allocate(LDm2    (nmu))
++    allocate(LDm2Debye(nmu))
++
++    allocate(inv_sigma(nd,nd))
++    allocate(mob      (nd,nd,nmu))
++    allocate(mob_e    (nd,nd,nmu))
++    allocate(mob_h    (nd,nd,nmu))
++
++    allocate(sigma    (nd,nd,nmu))
++    allocate(sigS     (nd,nd,nmu))
++    allocate(bigK     (nd,nd,nmu))
++    allocate(S        (nd,nd,nmu))
++    allocate(PF       (nd,nd,nmu))
++    allocate(kappa    (nd,nd,nmu))
++
++    allocate(sigma_e  (nd,nd,nmu))
++    allocate(sigS_e   (nd,nd,nmu))
++    allocate(bigK_e   (nd,nd,nmu))
++    allocate(S_e      (nd,nd,nmu))
++    allocate(PF_e     (nd,nd,nmu))
++    allocate(kappa_e  (nd,nd,nmu))
++
++    allocate(sigma_h  (nd,nd,nmu))
++    allocate(sigS_h   (nd,nd,nmu))
++    allocate(bigK_h   (nd,nd,nmu))
++    allocate(S_h      (nd,nd,nmu))
++    allocate(PF_h     (nd,nd,nmu))
++    allocate(kappa_h  (nd,nd,nmu))
++
++    allocate(en      (nlines))
++    allocate(dos     (nlines))
++    allocate(sigxx   (3,3,nlines))
++    allocate(tdf     (nd,nd,nlines,nmu))
++    allocate(en_bin  (nlines))
++    allocate(fe      (nlines,nmu))
++    allocate(feminusone(nlines,nmu))
++    allocate(neg_dfde(nlines,nmu))
++    allocate(tau     (nlines,nmu))
++    if (gs .eq. 1) then
++       allocate(dos_u (nlines))
++       allocate(dos_d (nlines))
++    endif
++
++    mu      = zero
++    n_e     = zero
++    n_h     = zero
++    ntot    = zero
++    LDm2    = zero
++    LDm2Debye = zero
++    en      = zero 
++    dos     = zero 
++    fe      = zero 
++    feminusone= zero 
++    neg_dfde= zero 
++    tau     = zero 
++
++    inv_sigma = zero
++    mob       = zero
++    mob_e     = zero
++    mob_h     = zero
++
++    sigma     = zero
++    sigS      = zero
++    bigK      = zero
++    S         = zero
++    PF        = zero
++    kappa     = zero
++
++    sigma_e   = zero
++    sigS_e    = zero
++    bigK_e    = zero
++    S_e       = zero
++    PF_e      = zero
++    kappa_e   = zero
++
++    sigma_h   = zero
++    sigS_h    = zero
++    bigK_h    = zero
++    S_h       = zero
++    PF_h      = zero
++    kappa_h   = zero
++    en_bin= 0 
++    if (gs .eq. 1) then
++       dos_u  = zero
++       dos_d  = zero
++    endif
++
++    !-------------------------------------------!
++    ! read dos and epic.g2       
++    !-------------------------------------------!
++
++    file_unit=101
++    open(file_unit,file=trim(prefix)//'transdos',form='formatted',&
++         status='old',err=101)
++    read(file_unit,*) ! skip comment
++    do i = 1, nlines
++       read(file_unit,*) en(i),  dos(i), tmp
++       en(i) = en(i) * rytoev
++       dos(i)= dos(i) / rytoev * gs
++    end do
++    close(file_unit)
++    write(6,*) "transdos file read"
++
++    file_unit=101
++    open(file_unit,file=trim(prefix)//'sigxx',form='formatted',&
++         status='old',err=101)
++
++    do i = 1, nlines
++       read(file_unit,*) tmp,  ((sigxx(u,v,i),u=1,3),v=1,3)
++       if (abs(en(i) - tmp *rytoev) .gt. eps8) write(0,*) 'Warning! energy in dos and sigxx not matching'
++    end do
++    close(file_unit)
++    write(6,*) "sigxx file read"
++    factor = sigmae_si / volume * gs 
++    sigxx(:,:,:) = sigxx(:,:,:) * factor
++
++    file_unit=101
++    open(file_unit,file=trim(prefix)//'curv',form='formatted',&
++         status='old',iostat=io)
++    file_unit2=301
++    open(file_unit2,file=trim(prefix)//'m_eff.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit2,'(A)') "#conductivity in S.m^{-1}"
++    write(file_unit2,'("#",2A16)') "e  (eV)", "m_eff"
++    outfmt = '(" ",f16.8,e12.4)'
++    allocate(m_eff(nlines))
++    do i = 1, nlines
++       read(file_unit,*) tmp,  ((curv_tmp(u,v),u=1,3),v=1,3)
++       if (abs(en(i) - tmp *rytoev) .gt. eps8) write(0,*) 'Warning! energy in dos and curv not matching'
++       if (dos(i) > 0.d0 .and. curv_tmp(1,1) > 0.d0) then
++          m_eff(i) = curv_tmp(1,1)*curv_tmp(2,2)*curv_tmp(3,3)&
++                  & +curv_tmp(1,2)*curv_tmp(2,3)*curv_tmp(3,1)&
++                  & +curv_tmp(1,3)*curv_tmp(2,1)*curv_tmp(3,2)&
++                  & -curv_tmp(1,1)*curv_tmp(2,3)*curv_tmp(3,2)&
++                  & -curv_tmp(1,2)*curv_tmp(2,1)*curv_tmp(3,3)&
++                  & -curv_tmp(1,3)*curv_tmp(2,2)*curv_tmp(3,1)
++          m_eff(i) = dos(i) * rytoev / gs / m_eff(i)**onethird * two
++       else
++          m_eff(i) = zero
++       end if
++       write(file_unit2,outfmt) en(i), (m_eff(i))
++    end do
++    close(file_unit2)
++    close(file_unit)
++    write(6,*) "curv file read"
++
++    if (epic) then
++      file_unit=102
++      open(file_unit,file=trim(prefix)//'epic.g2',form='formatted',&
++           status='old',err=101)
++
++      read(file_unit,*) nwin, nmodes ! dummy number of window (2 for c+v), number of phonon branches
++
++      read(file_unit,*) ev, dev, nev, ndev ! valence band edge, bin size (negative), number of bins
++      if (dev > 0.d0) then
++         write(6,*) 'wrong bin size for valence band'
++      endif
++
++      read(file_unit,*) ec, dec, nec, ndec ! conduction band edge, bin size (negative), number of bins
++      if (dec < 0.d0) then
++         write(6,*) 'wrong bin size for conduction band'
++      endif
++
++      enmin = max(ev+dev*dble(nev), en(1))
++      enmax = min(ec+dec*dble(nec), en(nlines))
++      Eg    = (ev + ec) / two
++
++      ndemax  = max(abs(ndev), abs(ndec))
++      ndegrid = ndemax*2-1
++
++      allocate(invtau (nmodes,nlines,nmu))
++      allocate(invtau_imp (nlines,nmu))
++      allocate(wavg(nmodes))
++      allocate(navg(nmodes))
++      allocate(dloc_wavg(nmodes))
++      allocate(absdec(ndegrid))
++      allocate(absdev(ndegrid))
++      allocate(dendec(ndegrid))
++      allocate(dendev(ndegrid))
++      invtau    = zero 
++      invtau_imp= zero 
++      wavg      = zero
++      navg      = 0
++      dloc_wavg = 0
++      read(file_unit,*)  (wavg(nu),nu=1,nmodes) ! average phonon frequency
++      wavg = wavg * cmm1_to_ev 
++
++     !write(6,*) (wavg(nu),nu=1,nmodes)
++
++      allocate(gavg_tmp(nmodes))
++      allocate(gavg_v(nmodes,ndegrid,nev))
++      allocate(gavg_c(nmodes,ndegrid,nec))
++      gavg_tmp = zero 
++      gavg_v   = zero 
++      gavg_c   = zero 
++      do i = 1, nev
++         do j = 1, ndegrid
++            read(file_unit,*) dummyi, ii, jj, (gavg_tmp(nu),nu=1,nmodes)
++            gavg_v(:,jj,ii) = gavg_tmp(:)
++         end do
++      end do
++      do i = 1, nec
++         do j = 1, ndegrid
++            read(file_unit,*) dummyi, ii, jj, (gavg_tmp(nu),nu=1,nmodes)
++            gavg_c(:,jj,ii) = gavg_tmp(:)
++         end do
++      end do
++      close(file_unit)
++      write(6,*) "epic.g2 file read"
++      open(file_unit,file=trim(prefix)//'epic.invq2',form='formatted',&
++           status='old',iostat=io)
++      rm_lr = (io == 0)
++      if (rm_lr) then
++         read(file_unit,*) ! dummy number of window (2 for c+v), number of phonon branches
++         read(file_unit,*) ! valence band edge, bin size (negative), number of bins
++         read(file_unit,*) ! conduction band edge, bin size (negative), number of bins
++         read(file_unit,*) ! average phonon frequency
++
++         if (.not. allocated(gavg_tmp)) allocate(gavg_tmp(nmodes))
++         allocate(gavg_lr_v(nmodes,ndegrid,nev))
++         allocate(gavg_lr_c(nmodes,ndegrid,nec))
++         gavg_tmp = zero 
++         gavg_lr_v= zero 
++         gavg_lr_c= zero 
++         do i = 1, nev
++            do j = 1, ndegrid
++               read(file_unit,*) dummyi, ii, jj, (gavg_tmp(nu),nu=1,nmodes)
++               gavg_lr_v(:,jj,ii) = gavg_tmp(:)
++            end do
++         end do
++         do i = 1, nec
++            do j = 1, ndegrid
++               read(file_unit,*) dummyi, ii, jj, (gavg_tmp(nu),nu=1,nmodes)
++               gavg_lr_c(:,jj,ii) = gavg_tmp(:)
++            end do
++         end do
++      end if
++      close(file_unit)
++      write(6,*) "epic.invq2 file read"
++    end if
++
++    if (lfroh) then
++      write(6,*) 'Frohlich correction included'
++      file_unit = 103
++      open(file_unit,file=trim(frohname),form='formatted',&
++          & status='old',err=101)
++      allocate(wfroh(nmodes))
++      allocate(c2froh(nmodes))
++      read(file_unit,*)
++      read(file_unit,*)
++      do nu = 1, nmodes
++         read(file_unit,*) dummyi, wfroh(nu), c2froh(nu), tmp
++      end do
++      read(file_unit,'(a)') dummyc
++      read(file_unit,*) eps_r
++      close(file_unit)
++      if (epic .and. rm_lr) then
++         do i = 1, nev
++            do j = 1, ndegrid
++               do nu = 1, nmodes
++                  gavg_v(nu,j,i) = gavg_v(nu,j,i) - gavg_lr_v(nu,j,i) * c2froh(nu)
++               end do
++            end do
++         end do
++         do i = 1, nec
++            do j = 1, ndegrid
++               do nu = 1, nmodes
++                  gavg_c(nu,j,i) = gavg_c(nu,j,i) - gavg_lr_c(nu,j,i) * c2froh(nu)
++               end do
++            end do
++         end do
++      end if
++      wfroh = wfroh * cmm1_to_ev  ! cm^{-1} to eV
++      c2froh= c2froh * 1.0d20     ! eV^2.Ang^{-2} to eV^2.m^{-2}
++    end if
++    write(6,*) "DOS and epic read. Now proceed to calculation"
++
++    !-------------------------------------------!
++    ! calculate tau       
++    !-------------------------------------------!
++
++    de_dos = (en(2) - en(1))
++    do i = 1, nlines
++       ! find locations of band edges
++       if (abs(en(i) - ev) <=  de_dos) loc_ev = i - 1
++       if (abs(en(i) - ec) <=  de_dos) loc_ec = i + 1
++       if (abs(en(i) - enmin) <=  de_dos) loc_min = i + 1
++       if (abs(en(i) - enmax) <=  de_dos) loc_max = i - 1
++    end do
++
++    do nu = 1, nmodes
++       dloc_wavg(nu) = nint(wavg(nu) / de_dos)
++    end do
++
++    loc_min = loc_min + dloc_wavg(nmodes)
++    loc_max = loc_max - dloc_wavg(nmodes)
++   !write(6,*) loc_min,loc_ev,loc_ec,loc_max
++
++    if (fixed_n) then
++       write(6,*) "Finding chemical potential"
++       mu(1)   = (mu1+mu2)*0.5d0
++       ntot(1) = zero
++       n_upper = zero
++       n_lower = zero
++       do i = 1, (loc_ev+loc_ec)/2
++          n_upper = n_upper+(cal_fermi(en(i), mu2,beta)-one)*dos(i)
++          n_lower = n_lower+(cal_fermi(en(i), mu1,beta)-one)*dos(i)
++          ntot(1) = ntot(1)+(cal_fermi(en(i), mu(1),beta)-one)*dos(i)
++       end do
++       ! apply scissor shift for conduction band
++       do i = (loc_ev+loc_ec)/2+1, nlines
++          n_upper = n_upper+(cal_fermi(en(i)+scissor, mu2,beta))*dos(i)
++          n_lower = n_lower+(cal_fermi(en(i)+scissor, mu1,beta))*dos(i)
++          ntot(1) = ntot(1)+(cal_fermi(en(i)+scissor, mu(1),beta))*dos(i)
++       end do
++       n_upper = n_upper / volume * de_dos
++       n_lower = n_lower / volume * de_dos
++       ntot(1) = ntot(1) / volume * de_dos
++       if (n_carrier > n_upper) then
++          stop 'cannot locate mu, upper limit too low'
++       elseif (n_carrier < n_lower) then
++          stop 'cannot locate mu, lower limit too high'
++       elseif (n_carrier - ntot(1)> 0.00001*abs(n_carrier)) then
++          mu1 = mu(1)
++       elseif (n_carrier - ntot(1)< 0.00001*abs(n_carrier)) then
++          mu2 = mu(1)
++       end if
++       do m = 1, 500
++          mu(1)   = (mu1+mu2)*0.5d0
++          ntot(1) = zero
++          do i = 1, (loc_ev+loc_ec)/2
++             ntot(1) = ntot(1)+(cal_fermi(en(i), mu(1),beta)-one)*dos(i)
++          end do
++          ! apply scissor shift for conduction band
++          do i = (loc_ev+loc_ec)/2+1, nlines
++             ntot(1) = ntot(1)+(cal_fermi(en(i)+scissor, mu(1),beta))*dos(i)
++          end do
++          ntot(1) = ntot(1) / volume * de_dos
++          if (n_carrier - ntot(1)> 0.000001*abs(n_carrier)) then
++             mu1 = mu(1)
++          elseif (n_carrier - ntot(1)< 0.000001*abs(n_carrier)) then
++             mu2 = mu(1)
++          else
++             mu1 = mu(1)
++             exit
++          end if
++       end do
++    end if
++    write(6,*) "calculating Fermi and Bose functions"
++    do m = 1, nmu
++       mu(m) = mu1 + dmu * dble(m-1)
++       do i = 1, (loc_ev+loc_ec)/2
++          fe(i,m) = cal_fermi(en(i), mu(m),beta)
++          feminusone(i,m) = cal_fermi_minusone(en(i), mu(m),beta)
++          neg_dfde(i,m) = - beta * fe(i,m) * feminusone(i,m) ! in eV^{-1}
++         !write(6,*) fe(i,m) 
++       end do
++       ! apply scissor shift for conduction band
++       do i = (loc_ev+loc_ec)/2+1, nlines
++          fe(i,m) = cal_fermi(en(i)+scissor, mu(m),beta)
++          feminusone(i,m) = cal_fermi_minusone(en(i)+scissor, mu(m),beta)
++          neg_dfde(i,m) = - beta * fe(i,m) * feminusone(i,m) ! in eV^{-1}
++         !write(6,*) fe(i,m) 
++       end do
++    end do
++    do nu = 1, nmodes
++       navg(nu) = cal_bose(wavg(nu), beta)
++      !write(6,*) navg(nu), navg(nu)*wavg(nu), wavg(nu), dloc_wavg(nu) 
++    end do
++    if (epic) then
++      do i = 1, ndemax-1
++         j = ndegrid + 1 - i
++         absdec(j) = abs(dec * (ndemax-i))
++         absdev(j) = abs(dev * (ndemax-i))
++         dendec(j) = absdec(j) * cal_bose(absdec(j),beta)
++         dendev(j) = absdev(j) * cal_bose(absdev(j),beta)
++         absdec(i) = absdec(j)
++         absdev(i) = absdev(j)
++         dendec(i) = dendec(j)
++         dendev(i) = dendev(j)
++      end do
++      absdec(ndemax) = 0.d0
++      absdev(ndemax) = 0.d0
++      dendec(ndemax) = 1.d0/beta
++      dendev(ndemax) = 1.d0/beta
++!     write(6,*) absdec
++!     write(6,*) dendec
++    end if
++
++    write(6,*) "calculating carrier density"
++    do m = 1, nmu
++       do i = 1, nlines
++          if (en(i) >= Eg) then
++             n_e(m) = n_e(m) + fe(i,m)*dos(i)
++          else
++             n_h(m) = n_h(m) + feminusone(i,m)*dos(i)
++          end if
++       end do
++    end do
++    n_e = n_e / volume * de_dos
++    n_h = n_h / volume * de_dos
++    ntot= n_e + n_h
++    if (thomasfermi .or. impurity) then
++       write(6,*) "calculating screening length"
++       do m = 1, nmu
++          do i = 1, nlines
++             LDm2(m) = LDm2(m) + neg_dfde(i,m)*dos(i)
++          end do
++       end do
++       factor = de_dos / volume / electronvolt_si * e2ke * fpi / eps_r
++       do m = 1, nmu
++          LDm2(m) = abs(LDm2(m)) *factor
++          LDm2Debye(m) = beta * abs(ntot(m)) * factor /de_dos * volume
++       end do
++       file_unit=201
++       open(file_unit,file=trim(prefix)//'TFlength.dat',form='formatted',&
++            status='unknown',err=101)
++       write(file_unit,'(A,e12.4,A)') "#Thomas-Fermi and Debye screening length"
++       write(file_unit,'("#",4A16)') "mu (eV)", "n_tot (m^{-3})", "L_TF(Ang)", "L_D(Ang)"
++       outfmt = '(" ",f16.8,3e12.4)'
++       do m = 1, nmu
++          write(file_unit,outfmt) mu(m), ntot(m), 1.d10/sqrt(LDm2(m)), 1.d10/sqrt(LDm2Debye(m))
++       end do
++       close(file_unit)
++    end if
++
++    if (.not. crta) then
++       write(6,*) "calculating tau^{-1}"
++       if (epic) then
++          do m = 1, nmu
++             do i = loc_min, loc_ev - 1
++                ii = loc_ev - i ! E relative to VBM
++                ! positive dE ( absorption )
++                do j = max(1,ndemax - ii + 1) , ndemax-1
++                   jj = i + ndemax - j ! E+dE
++                   do nu = 1, nmodes
++                      invtau(nu,i,m) = invtau(nu,i,m) + gavg_v(nu, j, ii) &
++                             & * (dendev(j) + fe(jj,m) * absdev(j)) * dos(jj)
++                   end do
++                end do
++                ! dE = 0
++                do nu = 1, nmodes
++                   invtau(nu,i,m) = invtau(nu,i,m) + gavg_v(nu, ndemax, ii) &
++                          & * (dendev(ndemax) ) * dos(i)
++                end do
++                ! negative dE ( emission )
++                do j = ndemax+1, ndegrid
++                   jj = i + ndemax - j ! E+dE
++                   do nu = 1, nmodes
++                      invtau(nu,i,m) = invtau(nu,i,m) + gavg_v(nu, j, ii) &
++                             & * (dendev(j) + (1.d0 - fe(jj,m)) * absdev(j)) * dos(jj)
++                   end do
++                end do
++             end do
++             do i = loc_ec + 1, loc_max
++                ii = i - loc_ec ! E relative to CBM
++                ! negative dE ( emission )
++                do j = max(1,ndemax - ii + 1) , ndemax-1
++                   jj = i - ndemax + j ! E+dE
++                   do nu = 1, nmodes
++                      invtau(nu,i,m) = invtau(nu,i,m) + gavg_c(nu, j, ii) &
++                             & * (dendec(j) + (1.d0 - fe(jj,m)) * absdec(j)) * dos(jj)
++                   end do
++                end do
++                ! dE = 0
++                do nu = 1, nmodes
++                   invtau(nu,i,m) = invtau(nu,i,m) + gavg_c(nu, ndemax, ii) &
++                          & * (dendec(ndemax) ) * dos(i)
++                end do
++                ! positive dE ( absorption )
++                do j = ndemax+1, ndegrid
++                   jj = i - ndemax + j ! E+dE
++                   do nu = 1, nmodes
++                      invtau(nu,i,m) = invtau(nu,i,m) + gavg_c(nu, j, ii) &
++                             & * (dendec(j) + fe(jj,m) * absdec(j)) * dos(jj)
++                   end do
++                end do
++             end do
++          end do
++       end if
++       if (.not. epic) then
++          factor = tpi / gs / hbar
++       else
++          factor = de_dos * tpi / gs / hbar
++       end if
++       do m = 1, nmu
++          do i = 1, nlines
++             do nu = 1, nmodes
++                invtau(nu,i,m) = invtau(nu,i,m) * factor
++             end do
++          end do
++       end do
++
++       if ((lfroh .or. impurity)) then
++          allocate(m_eff_b(nlines))
++          do i = 1, loc_ev
++            m_eff_b(i) = -abs(m_eff(i))
++          end do
++          do i = loc_ec, nlines
++            m_eff_b(i) = abs(m_eff(i))
++          end do
++       end if
++
++       if (lfroh) then
++          allocate(nfroh(nmodes))
++          allocate(dloc_wfroh(nmodes))
++          allocate(invwfroh(nmodes))
++          do nu = 1, nmodes
++             dloc_wfroh(nu) = nint(wfroh(nu) / de_dos)
++             if (wfroh(nu)/cmm1_to_ev>20) then
++                nfroh(nu) = cal_bose(wfroh(nu), beta)
++                invwfroh(nu) = 1.d0/(wfroh(nu))
++             else
++                nfroh(nu)        = 0.d0
++                invwfroh(nu) = 0.d0
++                c2froh(nu)        = 0.d0
++             end if
++          end do
++          !
++          ! add Frohlich term contribution to scattering rate
++          ! order of phonon branches might be slightly wrong
++          ! hopefully not too bad
++          factor = sqrt(electronmass_si)*volume/pi/hbar/hbar/sqrt(2.d0*electronvolt_si) !* gs * hbar / tpi
++          if (thomasfermi) then
++             do m = 1, nmu
++                factor2 = h2b2me * LDm2(m)
++                do i = loc_min, loc_ev-1
++                   e_eff = ev - en(i)
++                   do nu = 1, nmodes
++                      if (m_eff_b(i+dloc_wfroh(nu)).ne.0.d0) then
++                         tmp = factor2 / (-m_eff_b(i+dloc_wfroh(nu)))
++                      else
++                         tmp = 0.d0
++                      end if
++                      if (e_eff*invwfroh(nu).gt.one) then
++                         invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                                & * sqrt(-m_eff_b(i+dloc_wfroh(nu))/e_eff)    &
++                                & *(0.5d0*atanh(2.d0*sqrt(e_eff*(e_eff-wfroh(nu)))/(tmp-wfroh(nu)+2.d0*e_eff))&
++                                &  -tmp*sqrt(e_eff*(e_eff-wfroh(nu)))/((tmp-wfroh(nu))**2+tmp*4.d0*e_eff))&
++                                & * (nfroh(nu)+fe(i+dloc_wfroh(nu),m)) 
++                      end if
++                   end do
++                   do nu = 1, nmodes
++                      if (m_eff_b(i-dloc_wfroh(nu)).ne.0.d0) then
++                         tmp = factor2 / (-m_eff_b(i-dloc_wfroh(nu)))
++                      else
++                         tmp = 0.d0
++                      end if
++                      invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                             & *(sqrt(-m_eff_b(i-dloc_wfroh(nu))/e_eff)     &
++                             & *(0.5d0*atanh(2.d0*sqrt(e_eff*(e_eff+wfroh(nu)))/(tmp+wfroh(nu)+2.d0*e_eff))&
++                             &  -tmp*sqrt(e_eff*(e_eff+wfroh(nu)))/((tmp+wfroh(nu))**2+tmp*4.d0*e_eff))&
++                             & * (nfroh(nu)+one -fe(i-dloc_wfroh(nu),m)))
++                   end do
++                end do
++                do i = loc_ec+1, loc_max
++                   e_eff = en(i) - ec
++                   do nu = 1, nmodes
++                      if (m_eff_b(i+dloc_wfroh(nu)).ne.0.d0) then
++                         tmp = factor2 / (m_eff_b(i+dloc_wfroh(nu)))
++                      else
++                         tmp = 0.d0
++                      end if
++                      invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                             & * (sqrt(m_eff_b(i+dloc_wfroh(nu))/e_eff)    &
++                             & *(0.5d0*atanh(2.d0*sqrt(e_eff*(e_eff+wfroh(nu)))/(tmp+wfroh(nu)+2.d0*e_eff))&
++                             &  -tmp*sqrt(e_eff*(e_eff+wfroh(nu)))/((tmp+wfroh(nu))**2+tmp*4.d0*e_eff))&
++                             & * (nfroh(nu)+fe(i+dloc_wfroh(nu),m)))
++                   end do
++                   do nu = 1, nmodes
++                      if (m_eff_b(i-dloc_wfroh(nu)).ne.0.d0) then
++                         tmp = factor2 / (m_eff_b(i-dloc_wfroh(nu)))
++                      else
++                         tmp = 0.d0
++                      end if
++                      if (e_eff-wfroh(nu).gt.0.d0) then
++                         invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                                & *(sqrt(m_eff_b(i-dloc_wfroh(nu))/e_eff)     &
++                                & *(0.5d0*atanh(2.d0*sqrt(e_eff*(e_eff-wfroh(nu)))/(tmp-wfroh(nu)+2.d0*e_eff))&
++                                &  -tmp*sqrt(e_eff*(e_eff-wfroh(nu)))/((tmp-wfroh(nu))**2+tmp*4.d0*e_eff))&
++                                & * (nfroh(nu)+one -fe(i-dloc_wfroh(nu),m)))
++                      end if
++                   end do
++                end do
++             end do
++          else
++             do m = 1, nmu
++                do i = loc_min, loc_ev-1
++                   do nu = 1, nmodes
++                      if ((ev-en(i))*invwfroh(nu).gt.one) then
++                         invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                                & * (sqrt(m_eff_b(i+dloc_wfroh(nu))/(en(i)-ev))    &
++                                & * asinh(sqrt((ev-en(i))*invwfroh(nu)- one))&
++                                & * (nfroh(nu)+fe(i+dloc_wfroh(nu),m)))              
++                      end if
++                   end do
++                   do nu = 1, nmodes
++                      invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                             & *(sqrt(m_eff_b(i-dloc_wfroh(nu))/(en(i)-ev))     &
++                             & * asinh(sqrt((ev-en(i))*invwfroh(nu)))     &
++                             & * (nfroh(nu)+one -fe(i-dloc_wfroh(nu),m)))
++                   end do
++                end do
++                do i = loc_ec+1, loc_max
++                   do nu = 1, nmodes
++                      invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                             & * (sqrt(m_eff_b(i+dloc_wfroh(nu))/(en(i)-ec))    &
++                             & * asinh(sqrt((en(i)-ec)*invwfroh(nu)))&
++                             & * (nfroh(nu)+fe(i+dloc_wfroh(nu),m))) 
++                      if ((en(i)-ec)*invwfroh(nu).gt.one) then
++                         invtau(nu,i,m) = invtau(nu,i,m) + factor * c2froh(nu) &
++                                & *(sqrt(m_eff_b(i-dloc_wfroh(nu))/(en(i)-ec))     &
++                                & * asinh(sqrt((en(i)-ec)*invwfroh(nu)- one))    &
++                                & * (nfroh(nu)+one -fe(i-dloc_wfroh(nu),m)))
++                      end if
++                   end do
++                end do
++             end do
++          end if
++       end if
++
++       if (impurity) then
++          do m = 1, nmu
++             if (.not. fixed_imp) n_imp = abs(n_e(m)+n_h(m))
++             factor = abs(n_imp)*(e2ke*fpi/eps_r)**2/pi/16.d0/sqrt(2.d0*electronmass_si)/(electronvolt_si**1.5d0)
++             do i = loc_min, loc_ev-1
++                e_eff = ev - en(i)
++                if (abs(m_eff_b(i))>0) then
++                   tmp = 4.d0*e_eff/ (h2b2me * LDm2(m))/abs(m_eff_b(i)) ! gamma defined in Lundstrom's
++                   invtau_imp(i,m) = invtau_imp(i,m) + factor / sqrt(abs(e_eff**3 * m_eff_b(i))) &
++                          & * (log(1.d0+tmp)-tmp/(1+tmp))
++                endif
++             end do
++             do i = loc_ec+1, loc_max
++                e_eff = en(i) - ec
++                if (abs(m_eff_b(i))>0) then
++                   tmp = 4.d0*e_eff/ (h2b2me * LDm2(m))/abs(m_eff_b(i)) ! gamma defined in Lundstrom's
++                   invtau_imp(i,m) = invtau_imp(i,m) + factor / sqrt(abs(e_eff**3 * m_eff_b(i))) &
++                          & * (log(1.d0+tmp)-tmp/(1+tmp))
++                endif
++             end do
++          end do
++       end if
++
++       write(6,*) "calculating tau"
++       do m = 1, nmu
++          do i = 1, nlines
++             do nu = 1, nmodes
++                tau(i,m) = tau(i,m) + invtau(nu,i,m)
++             end do
++             if (impurity) tau(i,m) = tau(i,m) + invtau_imp(i,m)
++             if (tau(i,m) > 1e-5) then
++                tau(i,m) = one / tau(i,m)
++             else
++                tau(i,m) = zero
++             end if
++          end do
++       end do
++    end if ! not crta
++
++    write(6,*) "calculating transport distribution function"
++    if (crta) then
++       do m = 1, nmu
++          do i = 1, nlines
++             do v = 1, nd
++                do u = 1, nd
++                   tdf(u,v,i,m) = sigxx(u,v,i) * de_dos 
++                end do
++             end do
++          end do
++       end do
++    else
++       do m = 1, nmu
++          do i = 1, nlines
++             do v = 1, nd
++                do u = 1, nd
++                   tdf(u,v,i,m) = sigxx(u,v,i) * tau(i,m) * de_dos 
++                end do
++             end do
++          end do
++       end do
++    end if
++
++    do m = 1, nmu
++       do i = 1, nlines
++          if (en(i) > Eg) then
++             en_mu  = en(i) + scissor - mu(m)
++             en_mu2 = en_mu * en_mu
++             do v = 1, nd
++                do u = 1, nd
++                   sigma_e(u,v,m) = sigma_e(u,v,m) + tdf(u,v,i,m) * neg_dfde(i,m)
++                   sigS_e (u,v,m) = sigS_e (u,v,m) + tdf(u,v,i,m) * neg_dfde(i,m) * en_mu * invT
++                   bigK_e (u,v,m) = bigK_e (u,v,m) + tdf(u,v,i,m) * neg_dfde(i,m) * en_mu2 * invT
++                end do
++             end do
++          else
++             en_mu  = en(i) - mu(m)
++             en_mu2 = en_mu * en_mu
++             do v = 1, nd
++                do u = 1, nd
++                   sigma_h(u,v,m) = sigma_h(u,v,m) + tdf(u,v,i,m) * neg_dfde(i,m)
++                   sigS_h (u,v,m) = sigS_h (u,v,m) + tdf(u,v,i,m) * neg_dfde(i,m) * en_mu * invT
++                   bigK_h (u,v,m) = bigK_h (u,v,m) + tdf(u,v,i,m) * neg_dfde(i,m) * en_mu2 * invT
++                end do
++             end do
++          end if
++       end do
++    end do
++
++    sigma   = sigma_e + sigma_h
++    sigS    = sigS_e  + sigS_h
++    bigK    = bigK_e  + bigK_h
++
++    do m = 1, nmu
++       do v = 1, nd
++          do u = 1, nd
++             mob  (u,v,m) = sigma  (u,v,m) / ntot(m) / electron_si
++             mob_e(u,v,m) = sigma_e(u,v,m) / n_e (m) / electron_si
++             mob_h(u,v,m) = sigma_h(u,v,m) / n_h (m) / electron_si
++          end do
++       end do
++    end do
++
++    write(6, '("Calculating S, PF, and kappa_e through matrix operations")')
++
++    if (nd .EQ. 1) then
++       do m = 1, nmu
++          S    (1,1,m)   = sigS(1,1,m) / sigma(1,1,m)
++          PF   (1,1,m)   = sigS(1,1,m) * S    (1,1,m)
++          kappa(1,1,m)   = bigK(1,1,m) - PF   (1,1,m) * temp
++          S_e    (1,1,m) = sigS_e(1,1,m) / sigma_e(1,1,m)
++          PF_e   (1,1,m) = sigS_e(1,1,m) * S_e    (1,1,m)
++          kappa_e(1,1,m) = bigK_e(1,1,m) - PF_e   (1,1,m) * temp
++          S_h    (1,1,m) = sigS_h(1,1,m) / sigma_h(1,1,m)
++          PF_h   (1,1,m) = sigS_h(1,1,m) * S_h    (1,1,m)
++          kappa_h(1,1,m) = bigK_h(1,1,m) - PF_h   (1,1,m) * temp
++       end do
++    elseif (nd .EQ. 2) then
++       do m = 1, nmu
++          inv_sigma      = matinv2(sigma(:,:,m))
++          S    (:,:,m)   = matmul(inv_sigma,sigS(:,:,m))
++          PF   (:,:,m)   = matmul(sigS(:,:,m),S(:,:,m))
++          kappa(:,:,m)   = bigK(:,:,m) - PF(:,:,m) * temp
++          inv_sigma      = matinv2(sigma_e(:,:,m))
++          S_e    (:,:,m) = matmul(inv_sigma,sigS(:,:,m))
++          PF_e   (:,:,m) = matmul(sigS_e(:,:,m),S_e(:,:,m))
++          kappa_e(:,:,m) = bigK_e(:,:,m) - PF_e(:,:,m) * temp
++          inv_sigma      = matinv2(sigma_h(:,:,m))
++          S_h    (:,:,m) = matmul(inv_sigma,sigS(:,:,m))
++          PF_h   (:,:,m) = matmul(sigS_h(:,:,m),S_h(:,:,m))
++          kappa_h(:,:,m) = bigK_h(:,:,m) - PF_h(:,:,m) * temp
++       end do
++    elseif (nd .EQ. 3) then
++       do m = 1, nmu
++          inv_sigma      = matinv3(sigma(:,:,m))
++          S    (:,:,m)   = matmul(inv_sigma,sigS(:,:,m))
++          PF   (:,:,m)   = matmul(sigS(:,:,m),S(:,:,m))
++          kappa(:,:,m)   = bigK(:,:,m) - PF(:,:,m) * temp
++          inv_sigma      = matinv3(sigma_e(:,:,m))
++          S_e    (:,:,m) = matmul(inv_sigma,sigS_e(:,:,m))
++          PF_e   (:,:,m) = matmul(sigS_e(:,:,m),S_E(:,:,m))
++          kappa_e(:,:,m) = bigK_e(:,:,m) - PF_e(:,:,m) * temp
++          inv_sigma      = matinv3(sigma_h(:,:,m))
++          S_h    (:,:,m) = matmul(inv_sigma,sigS_h(:,:,m))
++          PF_h   (:,:,m) = matmul(sigS_h(:,:,m),S_E(:,:,m))
++          kappa_h(:,:,m) = bigK_h(:,:,m) - PF_h(:,:,m) * temp
++       end do
++    end if
++
++    m = (nmu / 2 + 1)
++    file_unit=202
++    open(file_unit,file=trim(prefix)//'tau.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A,e12.4,A)') "#scattering time in seconds, evaluated at n=",ntot(m),"m^{-3}"
++    write(file_unit,'("#",3A18)') "mu (eV)", "E (eV)", "tau (s)"
++    outfmt = '(" ",2f18.8,1e18.8)'
++    do i = loc_min, loc_max
++       write(file_unit,outfmt) mu(m), en(i), tau(i,m)
++    end do
++    close(file_unit)
++    
++    file_unit=203
++    open(file_unit,file=trim(prefix)//'invtau.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A,e12.4,A)') "#scattering rate in seconds^{-1}, evaluated at n=",ntot(m),"m^{-3}"
++    write(outfmt, '("(A1,2A18, ", i0, "A18)")') nmodes
++    write(file_unit,outfmt) "#", "mu (eV)", "E (eV)", ("P_l (s)",nu=1,nmodes)
++    write(outfmt, '("(2f18.8, ", i0, "e18.8)")') nmodes
++    do i = loc_min, loc_max
++       write(file_unit,outfmt) mu(m), en(i), (invtau(nu,i,m),nu=1,nmodes)
++    end do
++    close(file_unit)
++
++    if (impurity) then
++       file_unit=203
++       open(file_unit,file=trim(prefix)//'invtau_imp.dat',form='formatted',&
++            status='unknown',err=101)
++       write(file_unit,'(A,e12.4,A)') "#scattering rate in seconds^{-1}, evaluated at n=",ntot(m),"m^{-3}"
++       write(outfmt, '("(A1,2A18, ", i0, "A18)")') 1
++       write(file_unit,outfmt) "#", "mu (eV)", "E (eV)", ("P_imp (s)",nu=1,1)
++       write(outfmt, '("(2f18.8, ", i0, "e18.8)")') 1
++       do i = loc_min, loc_max
++          write(file_unit,outfmt) mu(m), en(i), invtau_imp(i,m)
++       end do
++       close(file_unit)
++    end if
++    
++    file_unit=204
++    open(file_unit,file=trim(prefix)//'ncarrier.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#carrier concentration"
++    write(file_unit,'("#",3A18)') "mu (eV)", "n_e (per cell)", "n_h (per cell)"
++    outfmt = '(" ",1e20.8,2e20.8)'
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_e(m), n_h(m)
++    end do
++    close(file_unit)
++    
++    ! sigma
++    file_unit=205
++    open(file_unit,file=trim(prefix)//'sigma.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#conductivity in S.m^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx", &
++                                   & "sigma_xy", "sigma_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx", &
++                                   & "sigma_xy", "sigma_xz", "sigma_yy",      &
++                                   & "sigma_yz", "sigma_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), ntot(m), ((sigma(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! Seebeck
++    file_unit=206
++    open(file_unit,file=trim(prefix)//'Seebeck.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#Seebeck coefficients in V.K^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx", &
++                                   & "S_xy", "S_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx", &
++                                   & "S_xy", "S_xz", "S_yy", "S_yz", "S_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), ntot(m), ((S(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! Power factor
++    file_unit=207
++    open(file_unit,file=trim(prefix)//'PF.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#Power factor in W.m^{-1}.K^{-2}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx", &
++                                   & "PF_xy", "PF_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx", &
++                                   & "PF_xy", "PF_xz", "PF_yy", "PF_yz", "PF_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), ntot(m), ((PF(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! mobility
++    file_unit=208
++    open(file_unit,file=trim(prefix)//'mobility.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#mobility in m^2.V^{-1}.s^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx", &
++                                   & "mob_xy", "mob_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx", &
++                                   & "mob_xy", "mob_xz", "mob_yy", "mob_yz", "mob_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), ntot(m), ((mob(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! kappa
++    file_unit=209
++    open(file_unit,file=trim(prefix)//'kappa.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#electron thermal conductivity in W.m^{-1}.K^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx", &
++                                   & "kappa_xy", "kappa_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx", &
++                                   & "kappa_xy", "kappa_xz", "kappa_yy", &
++                                   & "kappa_yz","kappa_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), ntot(m), ((kappa(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++    
++    ! sigma
++    file_unit=205
++    open(file_unit,file=trim(prefix)//'h.sigma.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#hole-only conductivity in S.m^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx", &
++                                   & "sigma_xy", "sigma_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx", &
++                                   & "sigma_xy", "sigma_xz", "sigma_yy",      &
++                                   & "sigma_yz", "sigma_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_h(m), ((sigma_h(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! Seebeck
++    file_unit=206
++    open(file_unit,file=trim(prefix)//'h.Seebeck.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#hole-only Seebeck coefficients in V.K^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx", &
++                                   & "S_xy", "S_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx", &
++                                   & "S_xy", "S_xz", "S_yy", "S_yz", "S_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_h(m), ((S_h(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! Power factor
++    file_unit=207
++    open(file_unit,file=trim(prefix)//'h.PF.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#hole-only Power factor in W.m^{-1}.K^{-2}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx", &
++                                   & "PF_xy", "PF_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx", &
++                                   & "PF_xy", "PF_xz", "PF_yy", "PF_yz", "PF_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_h(m), ((PF_h(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! mobility
++    file_unit=208
++    open(file_unit,file=trim(prefix)//'h.mobility.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#hole-only mobility in m^2.V^{-1}.s^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx", &
++                                   & "mob_xy", "mob_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx", &
++                                   & "mob_xy", "mob_xz", "mob_yy", "mob_yz", "mob_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_h(m), ((mob_h(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! kappa
++    file_unit=209
++    open(file_unit,file=trim(prefix)//'h.kappa.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#hole-only electron thermal conductivity in W.m^{-1}.K^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx", &
++                                   & "kappa_xy", "kappa_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx", &
++                                   & "kappa_xy", "kappa_xz", "kappa_yy", &
++                                   & "kappa_yz","kappa_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_h(m), ((kappa_h(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++    
++    ! sigma
++    file_unit=205
++    open(file_unit,file=trim(prefix)//'e.sigma.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#electron-only conductivity in S.m^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx", &
++                                   & "sigma_xy", "sigma_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "sigma_xx", &
++                                   & "sigma_xy", "sigma_xz", "sigma_yy",      &
++                                   & "sigma_yz", "sigma_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_e(m), ((sigma_e(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! Seebeck
++    file_unit=206
++    open(file_unit,file=trim(prefix)//'e.Seebeck.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#electron-only Seebeck coefficients in V.K^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx", &
++                                   & "S_xy", "S_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "S_xx", &
++                                   & "S_xy", "S_xz", "S_yy", "S_yz", "S_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_e(m), ((S_e(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! Power factor
++    file_unit=207
++    open(file_unit,file=trim(prefix)//'e.PF.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#electron-only Power factor in W.m^{-1}.K^{-2}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx", &
++                                   & "PF_xy", "PF_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "PF_xx", &
++                                   & "PF_xy", "PF_xz", "PF_yy", "PF_yz", "PF_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_e(m), ((PF_e(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! mobility
++    file_unit=208
++    open(file_unit,file=trim(prefix)//'e.mobility.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#electron-only mobility in m^2.V^{-1}.s^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx", &
++                                   & "mob_xy", "mob_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "mob_xx", &
++                                   & "mob_xy", "mob_xz", "mob_yy", "mob_yz", "mob_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_e(m), ((mob_e(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++
++    ! kappa
++    file_unit=209
++    open(file_unit,file=trim(prefix)//'e.kappa.dat',form='formatted',&
++         status='unknown',err=101)
++    write(file_unit,'(A)') "#electron-only electron thermal conductivity in W.m^{-1}.K^{-1}"
++    if (nd .EQ. 1) then
++       write(file_unit,'("#",3A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx"
++       outfmt = '(" ",f16.8,2e12.4)'
++    elseif (nd .EQ. 2) then
++       write(file_unit,'("#",5A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx", &
++                                   & "kappa_xy", "kappa_yy"
++       outfmt = '(" ",f16.8,4e12.4)'
++    elseif (nd .EQ. 3) then
++       write(file_unit,'("#",8A16)') "mu (eV)", "n_tot (m^{-3})", "kappa_xx", &
++                                   & "kappa_xy", "kappa_xz", "kappa_yy", &
++                                   & "kappa_yz","kappa_zz"
++       outfmt = '(" ",f16.8,7e12.4)'
++    end if
++
++    do m = 1, nmu
++       write(file_unit,outfmt) mu(m), n_e(m), ((kappa_e(u,v,m), u=v,nd), v=1,nd)
++    end do
++
++    close(file_unit)
++    !
++    ! current progress
++
++
++    deallocate(mu     )
++    deallocate(n_e    )
++    deallocate(n_h    )
++    deallocate(en     )
++    deallocate(dos    )
++    deallocate(en_bin )
++    deallocate(fe     )
++    deallocate(invtau )
++    deallocate(tau    )
++    if (gs .eq. 1) then
++       deallocate(dos_u)
++       deallocate(dos_d)
++    endif
++    deallocate(wavg)
++    deallocate(navg)
++    deallocate(dloc_wavg)
++    deallocate(gavg_tmp)
++    deallocate(gavg_v)
++    deallocate(gavg_c)
++
++    stop
++
++101 write(6,*) 'Error: problem opening file'
++
++    contains
++
++    ! count number of lines
++    function count_lines(filename) result(nlines)
++      implicit none
++      character(len=*)    :: filename
++      integer             :: nlines 
++      integer             :: io
++      character(len=200)  :: str
++    
++      open(10,file=filename, iostat=io, status='old')
++      if (io/=0) stop 'Cannot open file! '
++    
++      nlines = 0
++      do
++        read(10,*,iostat=io) str
++        str=trim(str)
++        if (io/=0) exit
++        if (str(1:1) .ne. '#' .and. str(1:1) .ne. '!') nlines = nlines + 1
++      end do
++      close(10)
++    end function 
++
++    ! define Bose function, using beta, instead of temperature T
++    pure function cal_bose(E, beta) result(bose)
++      integer, parameter :: dp = kind(1.d0)
++      real(kind=dp):: bose
++      real(kind=dp), intent(in):: E, beta
++      
++      if (beta*(E)> 1.d2 .or. E.eq.0.0) then
++        bose = 0.0d0
++      elseif (beta*(E)<1.d-5) then
++        bose = 1.0d0/(beta*E)
++      else
++        bose = 1.0d0/(exp(beta*(E)) - 1.0d0)
++      end if
++    end function 
++
++    ! define Fermi function, using beta, instead of temperature T
++    pure function cal_fermi_minusone(E, mu, beta) result(fermi)
++      integer, parameter :: dp = kind(1.d0)
++      real(kind=dp):: fermi, tmp
++      real(kind=dp), intent(in):: E, mu, beta
++      
++      if (beta*(E-mu)> 2.d2) then
++        fermi = -1.0d0
++      elseif (beta*(E-mu)<-2.d2) then
++        fermi = 0.0d0
++      else
++        tmp   = exp(beta*(E-mu))
++        fermi = -tmp/(tmp + 1.0d0)
++      end if
++    end function 
++
++    ! define Fermi function, using beta, instead of temperature T
++    pure function cal_fermi(E, mu, beta) result(fermi)
++      integer, parameter :: dp = kind(1.d0)
++      real(kind=dp):: fermi
++      real(kind=dp), intent(in):: E, mu, beta
++      
++      if (beta*(E-mu)> 2.d2) then
++        fermi = 0.0d0
++      elseif (beta*(E-mu)<-2.d2) then
++        fermi = 1.0d0
++      else
++        fermi = 1.0d0/(exp(beta*(E-mu)) + 1.0d0)
++      end if
++    end function 
++
++    pure function matinv2(A) result(B)
++      !! Performs a direct calculation of the inverse of a 2×2 matrix.
++      !! from FortranWiki
++      real(dp), intent(in) :: A(2,2)   !! Matrix
++      real(dp)             :: B(2,2)   !! Inverse matrix
++      real(dp)             :: detinv
++  
++      ! Calculate the inverse determinant of the matrix
++      detinv = 1/(A(1,1)*A(2,2) - A(1,2)*A(2,1))
++  
++      ! Calculate the inverse of the matrix
++      B(1,1) = +detinv * A(2,2)
++      B(2,1) = -detinv * A(2,1)
++      B(1,2) = -detinv * A(1,2)
++      B(2,2) = +detinv * A(1,1)
++    end function
++  
++    pure function matinv3(A) result(B)
++      !! Performs a direct calculation of the inverse of a 3×3 matrix.
++      !! from FortranWiki
++      real(dp), intent(in) :: A(3,3)   !! Matrix
++      real(dp)             :: B(3,3)   !! Inverse matrix
++      real(dp)             :: detinv
++  
++      ! Calculate the inverse determinant of the matrix
++      detinv = 1/(A(1,1)*A(2,2)*A(3,3) - A(1,1)*A(2,3)*A(3,2)&
++                - A(1,2)*A(2,1)*A(3,3) + A(1,2)*A(2,3)*A(3,1)&
++                + A(1,3)*A(2,1)*A(3,2) - A(1,3)*A(2,2)*A(3,1))
++  
++      ! Calculate the inverse of the matrix
++      B(1,1) = +detinv * (A(2,2)*A(3,3) - A(2,3)*A(3,2))
++      B(2,1) = -detinv * (A(2,1)*A(3,3) - A(2,3)*A(3,1))
++      B(3,1) = +detinv * (A(2,1)*A(3,2) - A(2,2)*A(3,1))
++      B(1,2) = -detinv * (A(1,2)*A(3,3) - A(1,3)*A(3,2))
++      B(2,2) = +detinv * (A(1,1)*A(3,3) - A(1,3)*A(3,1))
++      B(3,2) = -detinv * (A(1,1)*A(3,2) - A(1,2)*A(3,1))
++      B(1,3) = +detinv * (A(1,2)*A(2,3) - A(1,3)*A(2,2))
++      B(2,3) = -detinv * (A(1,1)*A(2,3) - A(1,3)*A(2,1))
++      B(3,3) = +detinv * (A(1,1)*A(2,2) - A(1,2)*A(2,1))
++    end function
++
++  end program tauepic

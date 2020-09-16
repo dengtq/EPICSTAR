@@ -1,0 +1,32 @@
+ &control
+    calculation     = 'scf'
+    prefix          = 'Si'
+    restart_mode    = 'from_scratch'
+    wf_collect      = .true.
+    pseudo_dir      = '../../pp/'
+    outdir          = './tmp_dir/'
+    verbosity       = 'high'
+    etot_conv_thr   = 1d-7
+    forc_conv_thr   = 1d-6
+    tprnfor         = .true.
+    tstress         = .true.
+ /
+ &system
+    a               = 5.39
+    space_group     = 227
+    nspin           = 1
+    nat             = 1
+    ntyp            = 1
+    ecutwfc         = 50
+    occupations     = 'fixed'
+    nbnd            = 8
+ /
+ &electrons
+    conv_thr        = 1.0d-10
+ /
+ATOMIC_SPECIES
+ Si 28.0855  Si.pz-n-nc.UPF
+ATOMIC_POSITIONS crystal_sg
+  Si    0.00000000000  0.00000000000  0.00000000000
+K_POINTS AUTOMATIC
+8 8 8 0 0 0

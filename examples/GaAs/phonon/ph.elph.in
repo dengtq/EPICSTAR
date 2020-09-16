@@ -1,0 +1,21 @@
+--
+&inputph
+  prefix   = 'GaAs'
+  epsil    = .true.
+  fildvscf = 'dvscf'
+  lqdir    = .true.
+  ldisp    = .true.
+  outdir   = './tmp_dir/'
+  fildyn   = 'GaAs.dyn'
+  electron_phonon = 'epa'
+  trans    = .false.
+  nq1=4
+  nq2=4
+  nq3=4
+  nk1=4
+  nk2=4
+  nk3=4
+  k1=1
+  k2=1
+  k3=1
+ /
