@@ -14,10 +14,10 @@ Knowledge of Quantum Espresso (especially ph.x) and BoltzTraP is needed, and ple
 Apply the corresponding patches for BoltzTraP and QE and compile as usual.
 
 BoltzTraP:
-1. Download and unpack BoltzTraP 1.2.5 as boltztrap-1.2.5
-	tar -jxvf boltztrap-1.2.5.tar.bz2
-2. Apply patch
-	patch -p0 < ./epicstar/src/boltztrap-1.2.5-EPIC.patch
+1. Download and unpack BoltzTraP 1.2.5 as boltztrap-1.2.5:
+	`tar -jxvf boltztrap-1.2.5.tar.bz2`
+2. Apply patch:
+	`patch -p0 < ./epicstar/src/boltztrap-1.2.5-EPIC.patch`
 3. Configure and compile BoltzTraP as usual
 
 QE 6.3:
