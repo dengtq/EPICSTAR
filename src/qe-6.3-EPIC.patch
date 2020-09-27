@@ -1,7 +1,7 @@
 diff -urN q-e-qe-6.3/PHonon/PH/epic.f90 q-e-qe-6.3-EPIC/PHonon/PH/epic.f90
 --- q-e-qe-6.3/PHonon/PH/epic.f90	1970-01-01 07:30:00.000000000 +0730
-+++ q-e-qe-6.3-EPIC/PHonon/PH/epic.f90	2020-09-16 13:37:19.029447430 +0800
-@@ -0,0 +1,452 @@
++++ q-e-qe-6.3-EPIC/PHonon/PH/epic.f90	2020-09-27 16:32:57.797211192 +0800
+@@ -0,0 +1,453 @@
 +!-----------------------------------------------------------------------
 +!      EPIC STAR Method
 +!      Compute the generalized Eliashberg function
@@ -292,7 +292,8 @@ diff -urN q-e-qe-6.3/PHonon/PH/epic.f90 q-e-qe-6.3-EPIC/PHonon/PH/epic.f90
 +        do kk = 1, 2*ndemax-1
 +          do ll = 1, nmodes
 +            if (abs((degrid(kk, ii, 1)- omega(ll))*gtmp2) < 10.d0 .or. abs((degrid(kk, ii, 1)+ omega(ll))*gtmp2) < 10.d0) then
-+              gauss_ep(ll,kk,1,1,1) = sigmap_sqrttpi_m1*(exp(sigmap2 * (degrid(kk, ii, 1)- omega(ll))**2)+exp(sigmap2 * (degrid(kk, ii, 1)+ omega(ll))**2))
++              gauss_ep(ll,kk,1,1,1) = sigmap_sqrttpi_m1*(exp(sigmap2 * (degrid(kk, ii, 1)- omega(ll))**2) &
++                                                        +exp(sigmap2 * (degrid(kk, ii, 1)+ omega(ll))**2))
 +            end if
 +            F(kk,ii) = F(kk,ii) + gauss_ep(ll,kk,1,1,1)*wq(iq)
 +          end do
