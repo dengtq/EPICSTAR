@@ -21,10 +21,10 @@ BoltzTraP:
 3. Configure and compile BoltzTraP as usual
 
 QE 6.3:
-1. Download and unpack QE 6.3 as q-e-qe-6.3
-	tar -zxvf q-e-qe-6.3.tar.gz
-2. Apply patch
-	patch -p0 < ./epicstar/src/qe-6.3-EPIC.patch
+1. Download and unpack QE 6.3 as q-e-qe-6.3:
+	`tar -zxvf q-e-qe-6.3.tar.gz`
+2. Apply patch:
+	`patch -p0 < ./epicstar/src/qe-6.3-EPIC.patch`
 3. Configure and compile ph as usual
 
 ## Workflow
