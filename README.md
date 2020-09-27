@@ -15,12 +15,16 @@ Apply the corresponding patches for BoltzTraP and QE and compile as usual.
 
 BoltzTraP:
 1. Download and unpack BoltzTraP 1.2.5 as boltztrap-1.2.5
-2. execute:  patch -p0 boltztrap-1.2.5-EPIC.patch
+	tar -jxvf boltztrap-1.2.5.tar.bz2
+2. Apply patch
+	patch -p0 < ./epicstar/src/boltztrap-1.2.5-EPIC.patch
 3. Configure and compile BoltzTraP as usual
 
 QE 6.3:
 1. Download and unpack QE 6.3 as q-e-qe-6.3
-2. execute:  patch -p0 qe-6.3-EPIC.patch
+	tar -zxvf q-e-qe-6.3.tar.gz
+2. Apply patch
+	patch -p0 < ./epicstar/src/qe-6.3-EPIC.patch
 3. Configure and compile ph as usual
 
 ## Workflow
